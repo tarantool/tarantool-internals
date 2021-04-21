@@ -8,6 +8,7 @@ Tarantool internals
    fiber
    replication
    relay
+   qsync
    wal
    wal-fmt
    allocators
