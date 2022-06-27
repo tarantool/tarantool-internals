@@ -40,6 +40,7 @@ release = ''
 # ones.
 extensions = [
     'recommonmark',
+    'sphinx.ext.intersphinx',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -59,7 +60,7 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -160,5 +161,11 @@ texinfo_documents = [
      'Miscellaneous'),
 ]
 
+intersphinx_mapping = {
+    'community': (
+        f"https://www.tarantool.io/{language}/doc/latest",
+        f"community.inv"
+    )
+}
 
 # -- Extension configuration -------------------------------------------------
