@@ -1,0 +1,35 @@
+name: Destroy-deployments
+
+on:
+  pull_request:
+    types:
+      - closed
+jobs:
+  destroy-deployment:
+    runs-on: self-hosted
+    container: tarantool/doc-builder:slim-4.2
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Set branch name from source branch
+        run: echo "BRANCH_NAME=${GITHUB_HEAD_REF##*/}" >> $GITHUB_ENV
+
+      - run: |
+          curl -X DELETE -d '{"update_key":"${{secrets.INTERNALS_UPDATE_KEY}}"}' -H "Content-Type: application/json" ${{secrets.INTERNALS_DEV_UPDATE_URL}}${{env.BRANCH_NAME}}/
+      - name: Remove dev server deployment at branch-${{env.BRANCH_NAME}}
+        uses: bobheadxi/deployments@v0.5.2
+        id: deployment
+        with:
+          step: deactivate-env
+          token: ${{secrets.GITHUB_TOKEN}}
+          env: "branch-${{env.BRANCH_NAME}}"
+
+      - name: Remove translation deployment at translate-${{env.BRANCH_NAME}}
+        uses: bobheadxi/deployments@v0.5.2
+        id: translation
+        with:
+          step: deactivate-env
+          token: ${{secrets.GITHUB_TOKEN}}
+          env: "translation-${{env.BRANCH_NAME}}"
