@@ -40,6 +40,7 @@ release = ''
 # ones.
 extensions = [
     'recommonmark',
+    'sphinx.ext.intersphinx',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -160,5 +161,13 @@ texinfo_documents = [
      'Miscellaneous'),
 ]
 
+# -- Mapping for Intersphinx -------------------------------------------------
+
+intersphinx_mapping = {
+    'community': (
+        "https://www.tarantool.io/en/doc/latest",
+        None
+    )
+}
 
 # -- Extension configuration -------------------------------------------------
