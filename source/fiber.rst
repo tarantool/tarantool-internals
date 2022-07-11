@@ -257,7 +257,7 @@ Fibers do not start execution automatically, we have to call
         ev_run(loop(), 0);
 
 Here once the fiber is created we kick it to execute. This is done
-inside ``fiber_call_impl` which uses ``core_transfer``
+inside ``fiber_call_impl`` which uses ``core_transfer``
 routine to jump into ``fiber_loop`` and invoke ``run_script_f``
 inside.
 

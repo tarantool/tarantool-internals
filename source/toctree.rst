@@ -2,7 +2,7 @@
 
 .. toctree::
    :caption: Contents:
-   :maxdepth: 2
+   :maxdepth: 5
    :includehidden:
 
    fiber

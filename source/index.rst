@@ -3,7 +3,6 @@ Tarantool internals
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
 
    fiber
    replication
@@ -12,11 +11,3 @@ Tarantool internals
    wal
    wal-fmt
    allocators
-
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
