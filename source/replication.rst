@@ -174,6 +174,47 @@ of appliers in connected state.
             ...
         }
 
+There are some differences in how many connections are considered enough to
+proceed. This is controlled by ``bool connect_quorum`` parameter of
+``replicaset_connect``. On a instance bootstrap, i.e. when there are no local
+files (.snap, .xlog) to recover from ``connect_quorum`` is ``true``, and this
+means that ``replicaset_connect`` tries to connect to ``count`` of remote nodes
+for a period of ``replication_connect_timeout``. If the instance fails to
+connect to ``count`` of nodes, it continues with at least
+``replication_connect_quorum`` of connections, otherwise, an error is thrown:
+
+.. code-block:: c
+
+    replicaset_connect
+        ...
+        while (state.connected < count)
+            ...
+        if (state.connected < count)
+            ...
+            if (connect_quorum && state_connected < quorum) {
+                error
+                ...
+
+This is important to try to connect to everyone during bootstrap, because
+connected appliers are later polled to find the so-called "bootstrap leader",
+the node, which will add everyone else to the replicaset. Having a couple of
+nodes fail to connect to everyone means they will operate on differing sets of
+connections when finding the bootstrap leader, which essentially leads to
+conflicts, when two nodes are registering replicas at the same time.
+
+On a normal start though, connecting to everyone is not so critical.
+That's why ``connect_quorum`` is ``false`` in this case. This means the node
+passes ``replicaset_connect`` faster:
+
+.. code-block:: c
+
+    replicaset_connect
+        ...
+        while (state.connected < count) {
+            ...
+            if (state.connected >= quorum && !connect_quorum)
+                break;
+
 Once appliers are in ``APPLIER_CONNECTED`` state we clear ``applier_on_connect_f``
 trigger and call ``replicaset_update``. Note that not all appliers might
 be connected. Those ones which did not manage to are explicitly stopped,
@@ -540,6 +581,57 @@ which were unable to connect
 
 Note that woken appliers are not running they are just marked
 as alive.
+
+After waking up all appliers comes the ``sync`` stage:
+
+.. code-block:: c
+
+    box_cfg_xc
+        ...
+        replicaset_follow
+        ...
+        replicaset_sync
+            ...
+            double deadline = ev_monotonic_now(loop()) +
+                              replication_sync_timeout;
+            while (replicaset.applier.synced < quorum && ...) {
+                if (fiber_cond_wait_deadline(&replicaset.applier.cond,
+                                             deadline) != 0)
+                    break;
+            }
+            ...
+            if (replicaset.applier.synced < quorum) {
+                ...
+                box_set_orphan(true);
+            }
+
+The idea behind ``replicaset_sync`` is to keep the node read-only (by marking it
+as an orphan by ``box_set_orphan(true)``) until it syncs with at least
+``replication_connect_quorum`` remote nodes. This means that the local node has
+received all the data the remote nodes had at the moment of connection and has
+managed to catch up with them with a lag not more than ``replication_sync_lag``:
+
+.. code-block:: c
+
+    applier_check_sync
+        ...
+        if (applier->lag <= replication-sync_lag &&
+            vclock_compare(&applier->remote_vclock_at_subscribe,
+                           &replicaset.vclock) <= 0) {
+             applier_set_state(applier, APPLIER_FOLLOW);
+
+.. code-block:: c
+
+    replica_on_applier_sync
+        replicaset.applier.synced++;
+
+The attempts to sync with remote nodes do not stop once the timeout
+(``replication_sync_timeout``) expires. Once the timeout is reached the node
+leaves ``replicaset_sync`` and ``box_cfg_xc``, but stays orphan (i.e. read-only)
+and its appliers continue trying to sync.
+
+If the quorum is synced sooner or later, the node leaves orphan mode and may
+become writable.
 
 Applier lifecycle
 ~~~~~~~~~~~~~~~~~
