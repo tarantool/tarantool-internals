@@ -4,14 +4,14 @@ Qsync
 Introduction
 ------------
 
-``Qsync`` stands for quorum based synchronous replication. In
+``Qsync`` stands for quorum-based synchronous replication. In
 short it means that every record should be confirmed by a number
-of replicas (quorum) before the record considered to be safe to
+of replicas (quorum) before the record is considered to be safe to
 proceed.
 
 Since our WAL engine is **append only** two new records are added:
 ``IPROTO_CONFIRM`` and ``IPROTO_ROLLBACK``. The first one means
-that replicas have successfully wrote a transaction and we can
+that replicas have successfully written a transaction and we can
 continue handling new ones. In turn rollback implies that a quorum
 has not been achieved and the transaction should be discarded.
 To track transactions status we use that named ``limbo`` engine.
@@ -20,7 +20,7 @@ Worth to note some limitations in ``qsync`` implementation:
 
  - only **one** master node is supported within a cluster;
  - quorum should fit the ``N/2+1`` formula, where ``N``
-   is number of replicas in a cluster.
+   is a number of replicas in a cluster.
 
 To refresh memory about network connections architecture lets
 put some marks about ``applier`` and ``relay``. When replication
@@ -28,7 +28,7 @@ starts the applier connects to the replica node where ``iproto``
 thread accepts the connection and creates ``relay`` thread which
 monitors every new write to the local WAL via WAL watcher and
 replies to the applier on the master node after processing the data.
-In reverse the slave node raises own ``applier`` and the master
+In reverse the slave node raises its own ``applier`` and the master
 setup ``relay`` to send new data to the slave node. Thus each
 ``applier`` has a corresponding ``relay`` on the remote node. These
 two entities communicate via two separate sockets and each applier
@@ -70,7 +70,7 @@ Where
  - ``is_in_rollback`` a flag to mark if limbo is currently rolling
    back a transaction.
 
-Lets consider the case where transaction is initiated on a master
+Let's consider the case where a transaction is initiated on a master
 node and replicated to the single replica.
 
 Master initiates transaction
@@ -101,12 +101,12 @@ flags, ie the transaction should wait until previous transactions
 are complete and receive ACKs from a quorum.
 
 Note though if the transaction is asynchronous but the limbo queue is
-not empty it means that there are some previous uncommitted synchronous
+not empty means that there are some previous uncommitted synchronous
 transactions on the fly, and this asynchronous transaction should wait
 for previous synchronous transactions to complete first, thus we mark
 such transaction as ``TXN_WAIT_SYNC``.
 
-Then we add the transaction to the limbo
+Then we add the transaction to the limbo:
 
 
 .. code-block:: c
@@ -165,18 +165,18 @@ to the storage device.
             ...
         }
 
-The write is synchronous here, so we are waiting it to complete (in
-case of error we simply drop this entry from the limbo).
+The write is synchronous here, so we are waiting for it to be complete (in
+case of an error we simply drop this entry from the limbo).
 
-An interesting moment is that when WAL thread finishes write it notifies
-WAL watcher (ie relay thread) that new data has appended to the journal.
-The relay watcher performs ``recover_remaining_wals`` and send new data
+An interesting moment is that when WAL thread finishes writing it notifies
+WAL watcher (ie relay thread) that new data has been appended to the journal.
+The relay watcher performs ``recover_remaining_wals`` and sends new data
 to the replica.
 
 Replica receives transaction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Processing remote transactions goes via ``applier`` module. So lets assume
+Processing remote transactions goes via ``applier`` module. So let's assume
 we obtain a new synchronous record from the master node above and master
 has not finished write procedure yet in terms of fiber switching, thus
 we have not yet returned from ``journal_write``. The replica does
@@ -224,14 +224,15 @@ limbo entry and queues it.
         }
 
 The ``journal_write_try_async`` writes data to the storage device in
-asynchronous way, ie the code does not wait it to complete before processing
-new requests from applier. But for our scenario we assume that this write
-happens so fast that it completes before the master node is waking up from
+asynchronous way, ie the code does not wait for it to be complete before
+processing new requests from applier. But for our scenario we assume that this
+write happens so fast that it completes before the master node is waking up from
 its own write operation.
 
 So the ``txn_limbo_assign_lsn`` above assigns ``lsn`` from the master node
-to the limbo entry and then WAL write finishes and calls ``applier_txn_wal_write_cb``
-callback, which in turn causes ``applier_on_wal_write`` to run
+to the limbo entry and then WAL write finishes and calls
+``applier_txn_wal_write_cb`` callback, which in turn causes
+``applier_on_wal_write`` to run
 
 .. code-block:: c
 
@@ -287,7 +288,7 @@ Then main relay fiber detects that replica has received the data.
             ...
     }
 
-This cause ``tx_status_update`` to run in context of ``tx`` thread,
+This causes ``tx_status_update`` to run in the context of ``tx`` thread,
 remember the relay runs in a separate thread. Since we assume that
 master is still sitting in ``journal_write`` then the ``tx_status_update``
 may run before ``journal_write`` finishes. The ``tx_status_update`` tries
@@ -306,7 +307,7 @@ to update limbo status
         ...
     }
 
-And here is very interesting moment, the ``txn_limbo_ack`` purpose is to
+And here is a very interesting moment, the ``txn_limbo_ack`` purpose is to
 gather ACKs on synchronous replication to obtain quorum.
 
 .. code-block:: c
@@ -354,13 +355,13 @@ gather ACKs on synchronous replication to obtain quorum.
     }
 
 The key moment for our scenario is setting the LSN from replica in
-``limbo->vclock``, then since LSN on entry has not yet assigned we
+``limbo->vclock``, then since LSN on entry has not yet been assigned we
 exit early.
 
 Master finishes write
 ~~~~~~~~~~~~~~~~~~~~~
 
-Now lets continue. Assume that we've finally been woken up from the
+Now let's continue. Assume that we've finally been woken up from the
 ``journal_write`` and entry is in limbo with ``lsn = -1``.
 
 .. code-block:: c
@@ -379,8 +380,8 @@ Now lets continue. Assume that we've finally been woken up from the
                 goto rollback;
         }
 
-First we fetch LSN assigned by WAL engine and call ``txn_limbo_assign_local_lsn``,
-which not only assign the entry but also collects the number of ACKs obtained.
+First, we fetch LSN assigned by WAL engine and call ``txn_limbo_assign_local_lsn``,
+which not only assigns the entry but also collects the number of ACKs obtained.
 
 .. code-block:: c
 
@@ -409,9 +410,9 @@ which not only assign the entry but also collects the number of ACKs obtained.
 
 In our case the relay has been updating ``limbo->vclock`` before we exit WAL
 write routine so the replica already wrote this new data to an own WAL and
-now we can detect this situation reading replica ACK from ``entry->ack_count``.
+now we can detect this situation by reading replica ACK from ``entry->ack_count``.
 
-Then we call ``txn_limbo_ack`` by self (because we wrote the data to the
+Then we call ``txn_limbo_ack`` by ourselves (because we wrote the data to the
 own WAL and can ACK it), but this time entry has LSN assigned so we walk
 over the limbo queue and this time we reach the quorum so that ``confirm_lsn``
 points to our entry.
@@ -469,23 +470,23 @@ Then master runs ``txn_limbo_read_confirm``.
 Here we traverse the queue and mark the entry as committed and discard
 it from the queue.
 
-Finally the master node exits from ``txn_limbo_ack`` and calls
+Finally, the master node exits from ``txn_limbo_ack`` and calls
 ``txn_limbo_wait_complete``. In our scenario the relay and replica
 were so fast that ``txn_limbo_read_confirm`` already collected the
 quorum and finished processing of synchronous replication but this
 is not always happen this way.
 
 In turn the replica may do the reverse and due to various reasons
-(for example by network lag) and decelerate the processing. Thus
-the master node gonna wait until replica processed the data.
+(for example network lag) and decelerate the processing. Thus
+the master node gonna wait until replica processes the data.
 
 And for this case ``txn_limbo_wait_complete`` tries its best.
-Lets consider this early write case below.
+Let's consider this early write case below.
 
 Master write finished early
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-We assume the WAL wrote the data and entry in limbo is assigned with
+We assume the WAL wrote the data and entry in limbo is assigned with a
 proper LSN number. Relay has sent this new data to the salve's node
 applier already.
 
@@ -556,13 +557,13 @@ applier already.
         return 0;
     }
 
-First we check for previous scenario where relay has already replied
-that replica received and confirmed the data. But we're interested
-in next case where replica didn't processed the new data yet.
+First, we check for the previous scenario where the relay has already replied
+that the replica received and confirmed the data. But we're interested
+in the next case where the replica didn't process the new data yet.
 
 So we start waiting for a configurable timeout. This puts us to a wait
-cycle where other fibers and threads are continue working. In particular while
-we're in ``fiber_cond_wait_timeout`` the replica obtain new data, write
+cycle where other fibers and threads continue working. In particular while
+we're in ``fiber_cond_wait_timeout`` the replica obtains new data, write
 it to own WAL and then our master's relay acquire ratification then runs
 ``tx_status_update`` and ``txn_limbo_ack``, which in turn initiate already
 known ``txn_limbo_write_confirm`` and ``txn_limbo_read_confirm`` calls sequence.
