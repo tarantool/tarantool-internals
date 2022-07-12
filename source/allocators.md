@@ -165,7 +165,7 @@ slab_map(struct slab_arena *arena)
 <a name="slab_unmap"></a>
 
 Of course, we can also return one to an **arena**. In this case, we push
- it into the previously mentioned list of returned **slabs** to get it back
+it into the previously mentioned list of returned **slabs** to get it back
 faster next time.
 
 ```c
