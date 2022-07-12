@@ -230,8 +230,8 @@ trigger. We won't be jumping into it right now but the important thing is
 that this trigger sends ``fiber_cond_signal(&replicaset.applier.cond)``
 to the main replicaset instance.
 
-Now back to the caller, i.e. ``applier_sync_state``. The replica
-instances are created we continue walking over appliers
+Now back to the caller, which is the ``applier_sync_state``.
+The replica instances are created and we continue walking over appliers:
 
 .. code-block:: c
 
@@ -278,7 +278,7 @@ and they are moved to global ``replicaset.hash`` tree.
         ...
         rlist_swap(&replicaset.anon, &anon_replicas);
 
-At the end the anonymous replicas (which is not connected)
+At the end the anonymous replicas (ones which are not connected)
 are moved to global ``replicaset.anon``. So we have
 global ``replicaset`` fully consistent and ready for use.
 

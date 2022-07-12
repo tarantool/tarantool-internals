@@ -100,8 +100,8 @@ So we mark the transaction with ``TXN_WAIT_SYNC | TXN_WAIT_ACK``
 flags, ie the transaction should wait until previous transactions
 are complete and receive ACKs from a quorum.
 
-Note though if the transaction is asynchronous but the limbo queue is
-not empty means that there are some previous uncommitted synchronous
+Note that if the transaction is asynchronous but the limbo queue is
+not empty, it means that there are some previous uncommitted synchronous
 transactions on the fly, and this asynchronous transaction should wait
 for previous synchronous transactions to complete first, thus we mark
 such transaction as ``TXN_WAIT_SYNC``.
@@ -169,7 +169,7 @@ The write is synchronous here, so we are waiting for it to be complete (in
 case of an error we simply drop this entry from the limbo).
 
 An interesting moment is that when WAL thread finishes writing it notifies
-WAL watcher (ie relay thread) that new data has been appended to the journal.
+WAL watcher (that is, the relay thread) that new data has been appended to the journal.
 The relay watcher performs ``recover_remaining_wals`` and sends new data
 to the replica.
 
@@ -224,15 +224,16 @@ limbo entry and queues it.
         }
 
 The ``journal_write_try_async`` writes data to the storage device in
-asynchronous way, ie the code does not wait for it to be complete before
-processing new requests from applier. But for our scenario we assume that this
-write happens so fast that it completes before the master node is waking up from
-its own write operation.
+asynchronous way,
+which means that the code does not wait for it to be complete before
+processing new requests from applier.
+But for our scenario we assume that this write happens so fast that it
+completes before the master node wakes up from its own write operation.
 
 So the ``txn_limbo_assign_lsn`` above assigns ``lsn`` from the master node
 to the limbo entry and then WAL write finishes and calls
 ``applier_txn_wal_write_cb`` callback, which in turn causes
-``applier_on_wal_write`` to run
+``applier_on_wal_write`` to run:
 
 .. code-block:: c
 
@@ -307,7 +308,7 @@ to update limbo status
         ...
     }
 
-And here is a very interesting moment, the ``txn_limbo_ack`` purpose is to
+Here is a very interesting moment: the purpose of ``txn_limbo_ack``  is to
 gather ACKs on synchronous replication to obtain quorum.
 
 .. code-block:: c
@@ -562,9 +563,10 @@ that the replica received and confirmed the data. But we're interested
 in the next case where the replica didn't process the new data yet.
 
 So we start waiting for a configurable timeout. This puts us to a wait
-cycle where other fibers and threads continue working. In particular while
-we're in ``fiber_cond_wait_timeout`` the replica obtains new data, write
-it to own WAL and then our master's relay acquire ratification then runs
+cycle where other fibers and threads continue working.
+In particular, while we're in ``fiber_cond_wait_timeout``,
+the replica obtains new data, writes it to its own WAL,
+then our master's relay acquires ratification, and then runs
 ``tx_status_update`` and ``txn_limbo_ack``, which in turn initiate already
 known ``txn_limbo_write_confirm`` and ``txn_limbo_read_confirm`` calls sequence.
 The ``IPROTO_CONFIRM`` get written on the master node and propagated to the
