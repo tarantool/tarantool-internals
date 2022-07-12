@@ -9,7 +9,7 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{secrets.AWS_ACCESS_KEY_ID}}
       AWS_SECRET_ACCESS_KEY: ${{secrets.AWS_SECRET_ACCESS_KEY}}
       AWS_DEFAULT_REGION: ${{secrets.AWS_DEFAULT_REGION}}
-      ENDPOINT_URL: ${{secrets.S3_ENDPOINT_URL}}
+      S3_ENDPOINT_URL: ${{secrets.S3_ENDPOINT_URL}}
       S3_UPLOAD_PATH: ${{secrets.S3_UPLOAD_PATH}}
       S3_BUCKET: ${{secrets.S3_BUCKET}}
       INTERNALS_UPDATE_URL: ${{secrets.INTERNALS_DEVELOP_UPDATE_URL}}

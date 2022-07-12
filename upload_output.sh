@@ -13,10 +13,10 @@ if [ $not_exist ]; then
   echo "toctree.json does not exist"
 else
   echo "found toctree.json, remove the branch from s3 location"
-  aws s3 rm "${DOC_DEST}"/json --endpoint-url="${ENDPOINT_URL}" --recursive
+  aws s3 rm "${DOC_DEST}"/json --endpoint-url="${S3_ENDPOINT_URL}" --recursive
 fi
 
-aws s3 cp build/json "${DOC_DEST}"/json/_build_en/json --endpoint-url="${ENDPOINT_URL}" --recursive --include "*" --exclude "*.jpg" --exclude "*.png" --exclude "*.svg"
+aws s3 cp build/json "${DOC_DEST}"/json/_build_en/json --endpoint-url="${S3_ENDPOINT_URL}" --recursive --include "*" --exclude "*.jpg" --exclude "*.png" --exclude "*.svg"
 
 curl --fail --show-error \
     --data '{"update_key":"'"${UPDATE_KEY}"'"}' \
