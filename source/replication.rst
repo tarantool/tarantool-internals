@@ -226,12 +226,12 @@ are linked into red-black tree ``uniq`` for fast lookup via their UUID.
 We allocate new replica and assign an applier to it.
 
 Note that replica state is driven by ``replica_on_applier_state_f``
-trigger. We won't be juming into it right now but the important thing is
+trigger. We won't be jumping into it right now but the important thing is
 that this trigger sends ``fiber_cond_signal(&replicaset.applier.cond)``
 to the main replicaset instance.
 
-Now back to the caller, ie ``applier_sync_state``. The replica
-instances are created we continue walking over appliers
+Now back to the caller, which is the ``applier_sync_state``.
+The replica instances are created and we continue walking over appliers:
 
 .. code-block:: c
 
@@ -278,7 +278,7 @@ and they are moved to global ``replicaset.hash`` tree.
         ...
         rlist_swap(&replicaset.anon, &anon_replicas);
 
-At the end the anonimous replicas (which is not connected)
+At the end the anonymous replicas (ones which are not connected)
 are moved to global ``replicaset.anon``. So we have
 global ``replicaset`` fully consistent and ready for use.
 
@@ -293,14 +293,14 @@ Now we need to jump up to the initial caller ``bootstrap``.
                 replicaset_foreach(replica) {
                     // Walk over unique replicas
                     // from replicaset hash and
-                    // choose one with more advinsed
+                    // choose one with more advanced
                     // vclock or one with lowest UUID
             return leader;
 
 We need to find out how exactly we should start, either
 we are the master node or we should start from another
-node which is choosen as a cluster leader (ie it has
-most advansed vclock and low UUID).
+node which is chosen as a cluster leader (i.e. it has
+most advanced vclock and low UUID).
 
 Bootstrap first replica
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -687,7 +687,7 @@ Replication in 2.x series
 -------------------------
 
 Generally replication in 2.x series very similar to 1.10 in ideas
-still there are some significant diffierences.
+still there are some significant differences.
 
 The initialization starts with ``box_cfg_xc``.
 
@@ -748,7 +748,7 @@ with anonymous replication and we have some appliers running.
         } 
 
 On a cold start if we gonna be an anonymous replica we just remember the
-setting in `replication_anon`. Then we continue bootstrap procesure
+setting in ``replication_anon``. Then we continue bootstrap procedure
 (we don't consider local recovery for simplicity sake).
 
 First we're trying to reify appliers.

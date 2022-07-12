@@ -119,11 +119,11 @@ slab_arena_create(struct slab_arena *arena, struct quota *quota,
 
 <a name="slab_map"></a>
 
-Most importantly, arena allows us to map a **slab**. First we check the
+Most importantly, arena allows us to map a **slab**. First, we check the
 list of returned **slabs**, called **arena** cache (not
 **slab cache**), which contains previously used and now emptied slabs.
 If there are no such **slabs**, we confirm that **quota** limit is
-fullfilled and then either take **slab** from the **preallocated** area
+fulfilled and then either take **slab** from the **preallocated** area
 or allocate it.
 
 ```c
@@ -164,8 +164,8 @@ slab_map(struct slab_arena *arena)
 
 <a name="slab_unmap"></a>
 
-Of course we can also return one to an **arena**. In this case we push
-it into previously mentioned list of returned **slabs** to get it back
+Of course, we can also return one to an **arena**. In this case, we push
+it into the previously mentioned list of returned **slabs** to get it back
 faster next time.
 
 ```c
@@ -187,9 +187,9 @@ Slab cache allows us to get a piece of **arena slab** with the size
 close to needed. It implements a buddy system, which means that we get
 **slabs** of the size that is a power of 2 (**arena slab**, which size
 is also power of 2, is being divided until we get the chunk of the
-appropiate size, or we just get corresponding already available chunk),
-and then, when it is freed, we look for it's **neighbour (buddy)** to
-**merge** them, if neighbour is also free, to avoid **fragmentation**.
+appropriate size, or we just get corresponding already available chunk),
+and then, when it is freed, we look for its **neighbour (buddy)** to
+**merge** them, if the neighbour is also free, to avoid **fragmentation**.
 
 ### Slab & slab cache definition
 
@@ -298,7 +298,7 @@ Most importantly, it allows us to acquire a **slab** of needed
 starting from the given **order**. We can use slabs of higher
 **order**. In case nothing is found, we are trying to get a new
 **arena slab** using previously described **arena** method
-[slab_map](#slab_map). We preprocess it and add to the corresponding
+[slab_map](#slab_map). We preprocess it and add it to the corresponding
 lists. Then we are splitting the **slab** if the **order** doesn't
 match exactly.
 
@@ -407,14 +407,14 @@ slab_put_large(struct slab_cache *cache, struct slab *slab)
 ```
 
 When the normal **slab** is being emptied, it is processed in a more
-specific way, as mentioned above. We get it's **buddy** (neighbour
+specific way, as mentioned above. We get its **buddy** (neighbour
 **slab** of the same size, which complements current **slab** to the
 **slab** of the next **order**). if **buddy** is not in use and is not
 split into smaller parts, we **merge** them and get free **slab** of
 the next **order**, thus avoiding fragmentation. If we get an
-**arena slab** as the result, we return it to **arena** using it's
+**arena slab** as the result, we return it to **arena** using its
 method [slab_unmap](#slab_unmap) in case there is already an
-**arena slab** in **cache**. Otherwise we leave it in **slab cache** to
+**arena slab** in **cache**. Otherwise, we leave it in **slab cache** to
 avoid extra moves.
 
 ```c
@@ -474,8 +474,8 @@ slab_put_with_order(struct slab_cache *cache, struct slab *slab)
 Mempool is used to allocate small objects through splitting
 **slab cache ordered slabs** into pieces of the equal size. This is
 extremely helpful for vast amounts of fast allocations. On creation we
-need to specify object size for a **memory pool**. Thus possible object
-count is calculated and we get the **memory pool** with int64_t aligned
+need to specify object size for a **memory pool**. Thus, the possible object
+count is calculated, and we get the **memory pool** with int64_t aligned
 **offset** ready for allocations. **Mempool** works with **slab** wrap
 called **mslab**, which is needed to cut it in pieces.
 
@@ -637,14 +637,14 @@ mslab_create(struct mslab *slab, struct mempool *pool)
 Most importantly, mempool allows to allocate memory for a small object.
 This allocation is the most frequent in **tarantool**. Memory piece is
 being given solely based on the provided mempool. The first problem is
-to find suitable **slab**. If there is an appropiate slab, already
+to find a suitable **slab**. If there is an appropriate slab, already
 acquired from **slab cache** and still available, it will be used.
-Otherwise we might get totally free **cached slab** not yet returned to
+Otherwise, we might get totally free **cached slab** not yet returned to the
 arena. In case there are no such slabs, we will try to perform possibly
 heavier operation, trying to get a slab from the **slab cache** through
-it's [slab_get_with_order](#slab_get_with_order) method. As the last
+its [slab_get_with_order](#slab_get_with_order) method. As the last
 resort we are trying to get a **cold slab**, the type of **slab** which
-is mostly fillled, but has one freed block.
+is mostly filled, but has one freed block.
 This **slab** is being added to **hot** list, and then, finally, we are
 acquiring direct pointer through *mslab_alloc*, using **mslab** offset,
 shifting as we allocate new pieces.
@@ -716,7 +716,7 @@ There is a possibility to free memory from each allocated small object.
 Each **mslab** has **free_list** -- list of emptied chunks. It is being
 updated according to the new emptied area pointer. Then we decide where
 to place processed **mslab**: it will be either **hot** one, **cold**
-one, or **spare** one, depenging on the new free chunks amount.
+one, or **spare** one, depending on the new free chunks amount.
 
 ```c
 void
@@ -777,7 +777,7 @@ mslab_free(struct mempool *pool, struct mslab *slab, void *ptr)
 ## Small
 
 On the top of **allocators**, listed above, we have one more -- the one
-actually used to allocate tuples. Basically, here we are trying to find
+actually used to allocate tuples. Basically, here we are trying to find a
 suitable **mempool** to perform [mempool_alloc](#mempool_alloc) on it.
 Small system introduces **stepped** and **factored** pools to fit
 different **allocation** sizes. There is an array of **stepped** pools,
@@ -787,7 +787,7 @@ bytes and differ by predefined *STEP_SIZE*. There are also **factored**
 pools, which are intended to be used for bigger objects. They are
 called **factored** as far as each of them can contain objects from
 size *sz* to size *alloc_factor * sz*, where *alloc_factor* may be
-adjusted by user. **Factored** pools are only being created for given
+adjusted by the user. **Factored** pools are only being created for a given
 size if needed, and their amount is limited.
 
 ### Factor pool & small allocator definitions
@@ -930,25 +930,25 @@ small_alloc_create(struct small_alloc *alloc, struct slab_cache *cache,
 <a name="smalloc"></a>
 
 Most importantly, **small allocator** allows us to allocate memory for
-an object of given size. Here we start from **garbage collection**.
+an object of a given size. Here we start with **garbage collection**.
 **Factored pools** are being created when needed on allocation. First
 we start with garbage collection. This means we actually deallocate
 previously pushed to queues normal and large allocations, using
 *mempool_free* with [mslab_free](#mslab_free) under the hood and
 [slab_put_large](#slab_put_large) respectively.
 Next thing to do is to decide if we can use **stepped pool** for
-allocation or we need to use **factored pool** based on given object
-size. To calculated which **stepped pool** is needed, we divide size
-by *STEP_SIZE* using bit shift and subtract predefined smallest
-possible size (alreay divided by *STEP_SIZE*), as far as sizes don't
-start from zero. Thus we either get needed pool and may proceed to
-[mempool_alloc](#mempool_alloc) or understand, that size is to big
-for **stepped pools**. Therefore we will try to find big enough
+allocation, or we need to use **factored pool** based on the given object
+size. To calculate which **stepped pool** is needed, we divide size
+by *STEP_SIZE* using bit shift and subtract predefined the smallest
+possible size (already divided by *STEP_SIZE*), as far as sizes don't
+start from zero. Thus, we either get the needed pool and may proceed to
+[mempool_alloc](#mempool_alloc) or understand that size is too big
+for **stepped pools**. Therefore, we will try to find a big enough
 **factored pool**. If there is nothing big enough for given **size**,
 we will try to use [slab_get_large](#slab_get_large) directly.
-Otherwise we will either proceed to [mempool_alloc](#mempool_alloc) or
+Otherwise, we will either proceed to [mempool_alloc](#mempool_alloc) or
 try creating smaller **factored pool** (if relevant). If we are not
-succeeding with smaller **factored pool**, we will need to use
+succeeding with a smaller **factored pool**, we will need to use an
 imperfect one. Anyway, finally, we are coming with our pool to
 [mempool_alloc](#mempool_alloc) (except the case where we had to try
 [slab_get_large](#slab_get_large) instead).
@@ -1028,7 +1028,7 @@ function, used as the allocation function for **memtx index** needs by
 **matras**, which works in pair with *memtx_index_extent_reserve*.
 *memtx_index_extent_reserve* is being called when we are going to
 **build** or **rebuild index** to make sure that we have enough
-**reserved extents**. Otherwise *memtx_index_extent_reserve* tries to
+**reserved extents**. Otherwise, *memtx_index_extent_reserve* tries to
 allocate **extents** until we get the given number and aborts if it
 can't be done. This allows us to stick to consistency and abort the
 operation before it is too late.
