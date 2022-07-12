@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+set -xe
 DOC_DEST="$S3_UPLOAD_PATH/internals/${BRANCH_NAME}"
 # version in doc project and scripts
 DOC_VERSION=latest
@@ -17,7 +18,6 @@ fi
 
 aws s3 cp build/json "${DOC_DEST}"/json/_build_en/json --endpoint-url="${ENDPOINT_URL}" --recursive --include "*" --exclude "*.jpg" --exclude "*.png" --exclude "*.svg"
 
-set -xe
 curl --fail --show-error \
     --data '{"update_key":"'"${UPDATE_KEY}"'"}' \
     --header "Content-Type: application/json" \
