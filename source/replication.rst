@@ -174,6 +174,8 @@ of appliers in connected state.
             ...
         }
 
+----
+
 There are some differences in how many connections are considered enough to
 proceed. This is controlled by ``bool connect_quorum`` parameter of
 ``replicaset_connect``. On a instance bootstrap, i.e. when there are no local
@@ -214,6 +216,8 @@ passes ``replicaset_connect`` faster:
             ...
             if (state.connected >= quorum && !connect_quorum)
                 break;
+
+----
 
 Once appliers are in ``APPLIER_CONNECTED`` state we clear ``applier_on_connect_f``
 trigger and call ``replicaset_update``. Note that not all appliers might
