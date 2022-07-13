@@ -206,7 +206,7 @@ On a normal start though, connecting to everyone is not so critical.
 That's why ``connect_quorum`` is ``false`` in this case. This means the node
 passes ``replicaset_connect`` faster:
 
-.. code-block:: c
+..  code-block:: c
 
     replicaset_connect
         ...
