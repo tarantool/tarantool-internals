@@ -195,7 +195,7 @@ connect to ``count`` of nodes, it continues with at least
                 error
                 ...
 
-This is important to try to connect to everyone during bootstrap, because
+It is important to try connecting to everyone during bootstrap, because
 connected appliers are later polled to find the so-called "bootstrap leader",
 the node, which will add everyone else to the replicaset. Having a couple of
 nodes fail to connect to everyone means they will operate on differing sets of
