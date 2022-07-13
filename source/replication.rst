@@ -584,7 +584,7 @@ as alive.
 
 After waking up all appliers comes the ``sync`` stage:
 
-.. code-block:: c
+..  code-block:: c
 
     box_cfg_xc
         ...
