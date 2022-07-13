@@ -1,4 +1,5 @@
 name: Deploy branch
+
 on:
   pull_request:
 jobs:
@@ -18,5 +19,23 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Start dev server deployment
+        uses: bobheadxi/deployments@v0.5.2
+        id: deployment
+        with:
+          step: start
+          token: ${{secrets.GITHUB_TOKEN}}
+          env: ${{env.BRANCH_NAME}}
+          ref: ${{github.head_ref}}
+
       - run: sphinx-build -b json source -d build/.doctrees build/json
       - run: bash upload_output.sh
+
+      - name: update deployment status
+        uses: bobheadxi/deployments@v0.5.2
+        with:
+          step: finish
+          token: ${{secrets.GITHUB_TOKEN}}
+          status: ${{job.status}}
+          deployment_id: ${{steps.deployment.outputs.deployment_id}}
+          env_url: https://docs.d.tarantool.io/en/dev/core/
