@@ -183,7 +183,7 @@ for a period of ``replication_connect_timeout``. If the instance fails to
 connect to ``count`` of nodes, it continues with at least
 ``replication_connect_quorum`` of connections, otherwise, an error is thrown:
 
-.. code-block:: c
+..  code-block:: c
 
     replicaset_connect
         ...
