@@ -1292,7 +1292,7 @@ matras_alloc(struct matras *m, matras_id_t *result_id)
                                 matras_free_extent(m, extent1);
                         return 0;
                 }
-                extent1[n1] = (void *)extent2;```
+                extent1[n1] = (void *)extent2;
         }
 
         if (extent3_available) {
