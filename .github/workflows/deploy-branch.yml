@@ -28,7 +28,7 @@ jobs:
           env: ${{env.BRANCH_NAME}}
           ref: ${{github.head_ref}}
 
-      - run: sphinx-build -b json source -d build/.doctrees build/json
+      - run: make -f ci.mk json
       - run: bash upload_output.sh
 
       - name: update deployment status
