@@ -22,5 +22,5 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - run: sphinx-build -b json source -d build/.doctrees build/json
+      - run: make -f ci.mk json
       - run: bash upload_output.sh

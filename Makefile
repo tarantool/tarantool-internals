@@ -2,7 +2,7 @@
 #
 
 # You can set these variables from the command line.
-SPHINXOPTS    =
+SPHINXOPTS    = -n -W
 SPHINXBUILD   = sphinx-build
 AUTOBUILD     = sphinx-autobuild
 SOURCEDIR     = source
@@ -11,7 +11,11 @@ current_dir = $(shell pwd)
 
 # Put it first so that "make" without argument is like "make help".
 help:
-	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+	docker run --rm -it -v $(current_dir):/doc tarantool/doc-builder:slim-4.2 sh -c \
+	"$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)"
+
+bash:
+	docker run --rm -it -v $(current_dir):/doc tarantool/doc-builder:slim-4.2 bash
 
 autobuild:
 	docker run --rm -it -p 8000:8000 -v $(current_dir):/doc tarantool/doc-builder:slim-4.2 sh -c \
