@@ -20,7 +20,7 @@
 # -- Project information -----------------------------------------------------
 
 project = 'Tarantool internals'
-copyright = '2020, Tarantool development team'
+copyright = '2022, Tarantool development team'
 author = 'Tarantool development team'
 
 # The short X.Y version
@@ -65,7 +65,9 @@ language = 'en'
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path .
-exclude_patterns = []
+exclude_patterns = [
+    '**/_includes/*',
+]
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
@@ -76,7 +78,6 @@ pygments_style = 'sphinx'
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'alabaster'
 html_theme = 'sphinx_rtd_theme'
 
 # Theme options are theme-specific and customize the look and feel of a theme
