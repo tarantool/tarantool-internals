@@ -8,7 +8,7 @@ CHECK_KEY="doc-builds/internals/${BRANCH_NAME}/json/_build_en/json/toctree.fjson
 UPDATE_KEY=$INTERNALS_UPDATE_KEY
 UPDATE_URL=$INTERNALS_UPDATE_URL
 
-aws s3api head-object --bucket ${S3_BUCKET} --key ${CHECK_KEY} --endpoint-url="${ENDPOINT_URL}" || not_exist=true
+aws s3api head-object --bucket ${S3_BUCKET} --key ${CHECK_KEY} --endpoint-url="${S3_ENDPOINT_URL}" || not_exist=true
 if [ $not_exist ]; then
   echo "toctree.json does not exist"
 else
