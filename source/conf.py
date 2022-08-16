@@ -43,6 +43,13 @@ extensions = [
     'sphinx.ext.intersphinx',
 ]
 
+extlinks = {
+    'tarantool-issue': ('https://github.com/tarantool/tarantool/issues/%s', 'gh-'),
+    'tarantool-release': ('https://github.com/tarantool/tarantool/releases/%s', 'v. '),
+    'doc-issue': ('https://github.com/tarantool/doc/issues/%s', 'doc-'),
+}
+
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
