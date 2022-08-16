@@ -102,7 +102,7 @@ The UUID type
 -------------
 
 The MessagePack EXT type ``MP_EXT`` together with the extension type
-``MP_UUID`` for values of the UUID type. Since version :doc:`2.4.1 </release/2.4.1>`.
+``MP_UUID`` for values of the UUID type. Since version :doc:`2.4.1 <community:release/2.4.1>`.
 
 MP_UUID is 2.
 
@@ -124,7 +124,7 @@ unsigned integers in the following order: time_low (4 bytes), time_mid
 (2 bytes), time_hi_and_version (2 bytes), clock_seq_hi_and_reserved (1
 byte), clock_seq_low (1 byte), node[0], ..., node[5] (1 byte each).
 
-Some of the functions in :ref:`Module uuid <uuid-module>` can produce values
+Some of the functions in :ref:`Module uuid <community:uuid-module>` can produce values
 which are compatible with the UUID data type.
 For example, after
 
@@ -147,7 +147,7 @@ a peek at the server response packet will show that it contains
 The ERROR type
 --------------
 
-Since version :doc:`2.4.1 </release/2.4.1>`, responses for errors have extra information
+Since version :doc:`2.4.1 <community:release/2.4.1>`, responses for errors have extra information
 following what was described in :ref:`Box protocol -- responses for errors
 <box_protocol-responses_error>`.
 This is a "compatible" enhancement, because clients that expect old-style
@@ -166,8 +166,8 @@ now IPROTO_ERROR is 0x52 and IPROTO_ERROR_24 is 0x31.
     ++=========================+============================+
                             MP_MAP
 
-The extra information, most of which is also in :doc:`error object
-</reference/reference_lua/box_error/new>` fields, is:
+The extra information, most of which is also in
+:doc:`error object <community:reference/reference_lua/box_error/new>` fields, is:
 
 ``MP_ERROR_TYPE`` (0x00) (MP_STR) Type that implies source, as in :samp:`{error_object}.base_type`, for example "ClientError".
 
@@ -182,7 +182,7 @@ The value here will be the same as in the ``IPROTO_ERROR_24`` value.
 Not to be confused with ``MP_ERROR_ERRCODE``.
 
 ``MP_ERROR_ERRCODE`` (0x05) (MP_UINT) Number of the error as defined in errcode.h, as in :samp:`{error_object}.code`,
-which can also be retrieved with the C function :ref:`box_error_code() <capi-box_error_code_code>`.
+which can also be retrieved with the C function :ref:`box_error_code() <community:capi-box_error_code_code>`.
 The value here will be the same as the lower part of the Response-Code-Indicator value.
 
 ``MP_ERROR_FIELDS`` (0x06) (MP_MAPs) Additional fields depending on error

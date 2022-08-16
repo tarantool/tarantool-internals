@@ -10,9 +10,9 @@ Data persistence and the WAL file format
 
 To maintain data persistence, Tarantool writes each data change request (insert,
 update, delete, replace, upsert) into a write-ahead log (WAL) file in the
-:ref:`wal_dir <cfg_basic-wal_dir>` directory. A new WAL file is created for every
-:ref:`rows_per_wal <cfg_binary_logging_snapshots-rows_per_wal>` records, or for every
-:ref:`wal_max_size <cfg_binary_logging_snapshots-wal_max_size>` bytes.
+:ref:`wal_dir <community:cfg_basic-wal_dir>` directory. A new WAL file is created for every
+:ref:`rows_per_wal <community:cfg_binary_logging_snapshots-rows_per_wal>` records, or for every
+:ref:`wal_max_size <community:cfg_binary_logging_snapshots-wal_max_size>` bytes.
 Each data change request gets assigned a continuously growing 64-bit log sequence
 number. The name of the WAL file is based on the log sequence number of the first
 record in the file, plus an extension ``.xlog``.
@@ -23,7 +23,7 @@ each WAL record contains a header, some metadata, and then the data formatted
 according to `msgpack <https://en.wikipedia.org/wiki/MessagePack>`_ rules.
 For example, this is what the WAL file looks like after the first INSERT request
 ("s:insert({1})") for the sandbox database created in our
-:ref:`"Getting started" exercises <getting_started>`.
+:ref:`"Getting started" exercises <community:getting_started>`.
 On the left are the hexadecimal bytes that you would see with:
 
 ..  code-block:: console
@@ -100,11 +100,11 @@ particular, SELECT performance, even for SELECTs running on a connection packed
 with UPDATEs and DELETEs, remains unaffected by disk load.
 
 The WAL writer employs a number of durability modes, as defined in configuration
-variable :ref:`wal_mode <index-wal_mode>`. It is possible to turn the write-ahead
+variable :ref:`wal_mode <community:index-wal_mode>`. It is possible to turn the write-ahead
 log completely off, by setting
-:ref:`wal_mode <cfg_binary_logging_snapshots-wal_mode>` to *none*. Even
+:ref:`wal_mode <community:cfg_binary_logging_snapshots-wal_mode>` to *none*. Even
 without the write-ahead log it's still possible to take a persistent copy of the
-entire data set with the :ref:`box.snapshot() <box-snapshot>` request.
+entire data set with the :ref:`box.snapshot() <community:box-snapshot>` request.
 
 An .xlog file always contains changes based on the primary key.
 Even if the client requested an update or delete using

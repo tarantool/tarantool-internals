@@ -215,7 +215,7 @@ In responses Response-Code-Indicator will be followed by IPROTO_OK etc.
 
 **IPROTO_SYNC** = 0x01.
 An unsigned integer that should be incremented so that it is unique in every
-request. This integer is also returned from :doc:`/reference/reference_lua/box_session/sync`.
+request. This integer is also returned from :doc:`community:reference/reference_lua/box_session/sync`.
 The IPROTO_SYNC value of a response should be the same as
 the IPROTO_SYNC value of a request.
 
@@ -264,7 +264,7 @@ that contains the IPROTO key, and a body as described here.
 IPROTO_SELECT = 0x01
 ~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`space_object:select() <box_space-select>`.
+See :ref:`space_object:select() <community:box_space-select>`.
 The body is a 6-item map.
 
 ..  cssclass:: highlight
@@ -318,7 +318,7 @@ we will show actual byte codes of an IPROTO_SELECT message.
 IPROTO_INSERT = 0x02
 ~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`space_object:insert()  <box_space-insert>`.
+See :ref:`space_object:insert()  <community:box_space-insert>`.
 The body is a 2-item map:
 
 ..  cssclass:: highlight
@@ -361,7 +361,7 @@ Example: if the id of 'tspace' is 512 and this is the fifth message, |br|
 IPROTO_REPLACE = 0x03
 ~~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`space_object:replace()  <box_space-replace>`.
+See :ref:`space_object:replace()  <community:box_space-replace>`.
 The body is a 2-item map, the same as for IPROTO_INSERT:
 
 ..  cssclass:: highlight
@@ -386,7 +386,7 @@ The body is a 2-item map, the same as for IPROTO_INSERT:
 IPROTO_UPDATE = 0x04
 ~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`space_object:update()  <box_space-update>`.
+See :ref:`space_object:update()  <community:box_space-update>`.
 
 The body is usually a 4-item map:
 
@@ -448,7 +448,7 @@ we will show actual byte codes of an IPROTO_UPDATE message.
 IPROTO_DELETE = 0x05
 ~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`space_object:delete()  <box_space-delete>`.
+See :ref:`space_object:delete()  <community:box_space-delete>`.
 The body is a 3-item map:
 
 ..  cssclass:: highlight
@@ -474,7 +474,7 @@ The body is a 3-item map:
 IPROTO_CALL_16 = 0x06
 ~~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`conn:call() <net_box-call>`. The suffix ``_16`` is a hint that this is
+See :ref:`conn:call() <community:net_box-call>`. The suffix ``_16`` is a hint that this is
 for the ``call()`` until Tarantool 1.6. It is deprecated.
 Use :ref:`IPROTO_CALL <box_protocol-call>` instead.
 The body is a 2-item map:
@@ -503,7 +503,7 @@ The return value is an array of tuples.
 IPROTO_AUTH = 0x07
 ~~~~~~~~~~~~~~~~~~
 
-See :ref:`authentication <authentication-users>`.
+See :ref:`authentication <community:authentication-users>`.
 See the later section :ref:`Binary protocol -- authentication <box_protocol-authentication>`.
 
 
@@ -512,14 +512,14 @@ See the later section :ref:`Binary protocol -- authentication <box_protocol-auth
 IPROTO_EVAL = 0x08
 ~~~~~~~~~~~~~~~~~~
 
-See :ref:`conn:eval() <net_box-eval>`.
+See :ref:`conn:eval() <community:net_box-eval>`.
 Since the argument is a Lua expression, this is
 Tarantool's way to handle non-binary with the
 binary protocol. Any request that does not have
 its own code, for example :samp:`box.space.{space-name}:drop()`,
 will be handled either with :ref:`IPROTO_CALL <box_protocol-call>`
 or IPROTO_EVAL.
-The :ref:`tarantoolctl <tarantoolctl>` administrative utility
+The :ref:`tarantoolctl <community:tarantoolctl>` administrative utility
 makes extensive use of ``eval``.
 The body is a 2-item map:
 
@@ -562,7 +562,7 @@ Example: if this is the fifth message, :samp:`conn:eval('return 5;')` will cause
 IPROTO_UPSERT = 0x09
 ~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`space_object:upsert()  <box_space-upsert>`.
+See :ref:`space_object:upsert()  <community:box_space-upsert>`.
 
 The body is usually a 4-item map:
 
@@ -592,7 +592,7 @@ The IPROTO_OPS is the same as the IPROTO_TUPLE of :ref:`IPROTO_UPDATE <box_proto
 IPROTO_CALL = 0x0a
 ~~~~~~~~~~~~~~~~~~
 
-See :ref:`conn:call() <net_box-call>`.
+See :ref:`conn:call() <community:net_box-call>`.
 The body is a 2-item map:
 
 ..  cssclass:: highlight
@@ -620,7 +620,7 @@ The response will be a list of values, similar to the
 IPROTO_EXECUTE = 0x0b
 ~~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`box.execute() <box-sql_box_execute>`, this is only for SQL.
+See :ref:`box.execute() <community:box-sql_box_execute>`, this is only for SQL.
 The body is a 3-item map:
 
 ..  cssclass:: highlight
@@ -692,7 +692,7 @@ The body is: nothing.
 IPROTO_PREPARE = 0x0d
 ~~~~~~~~~~~~~~~~~~~~~
 
-See :ref:`box.prepare <box-sql_box_prepare>`, this is only for SQL.
+See :ref:`box.prepare <community:box-sql_box_prepare>`, this is only for SQL.
 The body is a 1-item map:
 
 ..  cssclass:: highlight
@@ -722,7 +722,7 @@ IPROTO_BEGIN = 0x0e
 ~~~~~~~~~~~~~~~~~~~
 
 Begin a transaction in the specified stream.
-See :ref:`stream:begin() <net_box-stream_begin>`.
+See :ref:`stream:begin() <community:net_box-stream_begin>`.
 The body is optional and can contain two items:
 
 ..  cssclass:: highlight
@@ -745,7 +745,7 @@ The body is optional and can contain two items:
 IPROTO_TIMEOUT is an optional timeout (in seconds). After it expires,
 the transaction will be rolled back automatically.
 
-IPROTO_TXN_ISOLATION is the :ref:`transaction isolation level <txn_mode_mvcc-options>`.
+IPROTO_TXN_ISOLATION is the :ref:`transaction isolation level <community:txn_mode_mvcc-options>`.
 It can take the following values:
 
 - ``TXN_ISOLATION_DEFAULT = 0``	-- use the default level from ``box.cfg`` (default value)
@@ -762,7 +762,7 @@ IPROTO_COMMIT = 0x0f
 ~~~~~~~~~~~~~~~~~~~~
 
 Commit the transaction in the specified stream.
-See :ref:`stream:commit() <net_box-stream_commit>`.
+See :ref:`stream:commit() <community:net_box-stream_commit>`.
 
 ..  cssclass:: highlight
 ..  parsed-literal::
@@ -786,7 +786,7 @@ IPROTO_ROLLBACK = 0x10
 ~~~~~~~~~~~~~~~~~~~~~~
 
 Rollback the transaction in the specified stream.
-See :ref:`stream:rollback() <net_box-stream_rollback>`.
+See :ref:`stream:rollback() <community:net_box-stream_rollback>`.
 
 ..  cssclass:: highlight
 ..  parsed-literal::
@@ -809,7 +809,7 @@ stream transactions in the binary protocol.
 IPROTO_PING = 0x40
 ~~~~~~~~~~~~~~~~~~
 
-See :ref:`conn:ping() <conn-ping>`. The body will be an empty map because IPROTO_PING
+See :ref:`conn:ping() <community:conn-ping>`. The body will be an empty map because IPROTO_PING
 in the header contains all the information that the server instance needs.
 
 ..  cssclass:: highlight
@@ -839,7 +839,7 @@ Connectors and clients do not need to send replication packets.
 See :ref:`Binary protocol -- replication <box_protocol-replication>`.
 
 The next two IPROTO messages are used in replication connections between
-Tarantool nodes in :ref:`synchronous replication <repl_sync>`.
+Tarantool nodes in :ref:`synchronous replication <community:repl_sync>`.
 The messages are not supposed to be used by any client applications in their
 regular connections.
 
@@ -968,11 +968,11 @@ Watchers
 --------
 
 The commands below support asynchronous server-client notifications signalled
-with :ref:`box.broadcast() <box-broadcast>`.
+with :ref:`box.broadcast() <community:box-broadcast>`.
 Servers that support the new feature set the ``IPROTO_FEATURE_WATCHERS`` feature in reply to the ``IPROTO_ID`` command.
 When the connection is closed, all watchers registered for it are unregistered.
 
-The remote :ref:`watcher <box-watchers>` protocol works in the following way:
+The remote :ref:`watcher <community:box-watchers>` protocol works in the following way:
 
 #.  The client sends an ``IPROTO_WATCH`` packet to subscribe to the updates of a specified key defined on the server.
 
@@ -1142,11 +1142,11 @@ a successful response will look like this:
 Later in :ref:`Binary protocol -- illustration <box_protocol-illustration>`
 we will show actual byte codes of the response to the IPROTO_INSERT message.
 
-IPROTO_DATA is what we get with net_box and :ref:`Module buffer <buffer-module>`
+IPROTO_DATA is what we get with net_box and :ref:`Module buffer <community:buffer-module>`
 so if we were using net_box we could decode with
-:ref:`msgpack.decode_unchecked() <msgpack-decode_unchecked_string>`,
+:ref:`msgpack.decode_unchecked() <community:msgpack-decode_unchecked_string>`,
 or we could convert to a string with :samp:`ffi.string({pointer},{length})`.
-The :ref:`pickle.unpack() <pickle-unpack>` function might also be helpful.
+The :ref:`pickle.unpack() <community:pickle-unpack>` function might also be helpful.
 
 ..  _box_protocol-responses_out_of_band:
 
@@ -1154,7 +1154,7 @@ Responses for no error and out-of-band
 --------------------------------------
 
 If the response is out-of-band, due to use of
-:ref:`box.session.push() <box_session-push>`,
+:ref:`box.session.push() <community:box_session-push>`,
 then the header Response-Code-Indicator will be IPROTO_CHUNK instead of IPROTO_OK.
 
 ..  _box_protocol-responses_error:
@@ -1214,7 +1214,7 @@ Looking in errcode.h we find that error code 0x0a (decimal 10) is
 ER_SPACE_EXISTS, and the string associated with ER_SPACE_EXISTS is
 "Space '%s' already exists".
 
-Since version :doc:`2.4.1 </release/2.4.1>`, responses for errors have extra information
+Since version :doc:`2.4.1 <community:release/2.4.1>`, responses for errors have extra information
 following what was described above. This extra information is given via
 MP_ERROR extension type. See details in :ref:`MessagePack extensions
 <msgpack_ext-error>` section.
@@ -1285,10 +1285,10 @@ If the SQL statement is SELECT or VALUES or PRAGMA, the response contains:
 * :samp:`IPROTO_METADATA: {array of column maps}` = array of column maps, with each column map containing
   at least IPROTO_FIELD_NAME (0x00) and MP_STR, and IPROTO_FIELD_TYPE (0x01) and MP_STR.
   Additionally, if ``sql_full_metadata`` in the
-  :ref:`_session_settings <box_space-session_settings>` system space
+  :ref:`_session_settings <community:box_space-session_settings>` system space
   is TRUE, then the array will have these additional column maps
   which correspond to components described in the
-  :ref:`box.execute() <box-sql_if_full_metadata>` section:
+  :ref:`box.execute() <community:box-sql_if_full_metadata>` section:
 
 ..  code-block:: none
 
@@ -1454,7 +1454,7 @@ function ``netbox_encode_auth``.
 Binary protocol -- streams
 --------------------------
 
-The :ref:`Streams and interactive transactions <txn_mode_stream-interactive-transactions>`
+The :ref:`Streams and interactive transactions <community:txn_mode_stream-interactive-transactions>`
 feature, which was added in Tarantool version
 :tarantool-release:`2.10.0`, allows two things:
 sequential processing and interleaving.
@@ -1470,14 +1470,14 @@ For example, a series of requests can include
 for stream #1", "commit for stream #1", "rollback for stream #2".
 
 To make these things possible,
-the engine should be :ref:`vinyl <engines-vinyl>` or :ref:`memtx with mvcc <cfg_basic-memtx_use_mvcc_engine>`, and
+the engine should be :ref:`vinyl <community:engines-vinyl>` or :ref:`memtx with mvcc <community:cfg_basic-memtx_use_mvcc_engine>`, and
 the client is responsible for ensuring that the stream identifier,
 unsigned integer :ref:`IPROTO_STREAM_ID <box_protocol-iproto_stream_id>`, is in the request header.
 IPROTO_STREAM_ID can be any positive 64-bit number, and should be unique for the connection.
 If IPROTO_STREAM_ID equals zero the server instance will ignore it.
 
 For example, suppose that the client has started a stream with
-the :ref:`net.box module <net_box-module>`
+the :ref:`net.box module <community:net_box-module>`
 
 ..  code-block:: lua
 
@@ -1517,8 +1517,8 @@ Thus there are now multiple ways to do transactions:
 with ``net_box`` ``stream:begin()`` and ``stream:commit()`` or ``stream:rollback()``
 which cause IPROTO_BEGIN and IPROTO_COMMIT or IPROTO_ROLLBACK with
 the current value of stream.stream_id;
-with :ref:`box.begin() <box-begin>` and :ref:`box.commit() <box-commit>` or :ref:`box.rollback() <box-rollback>`;
-with SQL and :ref:`START TRANSACTION <sql_start_transaction>` and :ref:`COMMIT <sql_commit>` or :ref:`ROLLBACK <sql_rollback>`.
+with :ref:`box.begin() <community:box-begin>` and :ref:`box.commit() <community:box-commit>` or :ref:`box.rollback() <community:box-rollback>`;
+with SQL and :ref:`START TRANSACTION <community:sql_start_transaction>` and :ref:`COMMIT <community:sql_commit>` or :ref:`ROLLBACK <community:sql_rollback>`.
 An application can use any or all of these ways.
 
 ..  _box_protocol-replication:
@@ -1597,7 +1597,7 @@ Every request between masters will have additional LSN and SERVER_ID.
 HEARTBEATS
 ~~~~~~~~~~
 
-Frequently a master sends a :ref:`heartbeat <heartbeat>` message to a replica.
+Frequently a master sends a :ref:`heartbeat <community:heartbeat>` message to a replica.
 For example, if there is a replica with id = 2,
 and a timestamp with a moment in 2020, a master might send this:
 
@@ -1646,44 +1646,44 @@ The fields within IPROTO_BALLOT are map items:
 
 
 IPROTO_BALLOT_IS_RO_CFG and IPRO_BALLOT_VCLOCK and IPROTO_BALLOT_GC_VCLOCK and IPROTO_BALLOT_IS_RO
-were added in version :doc:`2.6.1 </release/2.6.1>`.
-IPROTO_BALLOT_IS_ANON was added in version :doc:`2.7.1 </release/2.7.1>`.
+were added in version :doc:`2.6.1 <community:release/2.6.1>`.
+IPROTO_BALLOT_IS_ANON was added in version :doc:`2.7.1 <community:release/2.7.1>`.
 IPROTO_BALLOT_IS_BOOTED was added in version 2.7.3 and 2.8.2 and 2.9.1.
 There have been some name changes starting with version 2.7.3 and 2.8.2 and 2.9.1:
 IPROTO_BALLOT_IS_RO_CFG was formerly called IPROTO_BALLOT_IS_RO,
 and IPROTO_BALLOT_IS_RO was formerly called IPROTO_BALLOT_IS_LOADING.
 
-IPROTO_BALLOT_IS_RO_CFG corresponds to :ref:`box.cfg.read_only <cfg_basic-read_only>`.
+IPROTO_BALLOT_IS_RO_CFG corresponds to :ref:`box.cfg.read_only <community:cfg_basic-read_only>`.
 
 IPROTO_BALLOT_GC_VCLOCK can be the vclock value of the instance's oldest
-WAL entry, which corresponds to :ref:`box.info.gc().vclock <box_info_gc>`.
+WAL entry, which corresponds to :ref:`box.info.gc().vclock <community:box_info_gc>`.
 
 IPROTO_BALLOT_IS_RO is true if the instance is not writable,
 which may happen for a variety of reasons, such as:
-it was configured as :ref:`read_only <cfg_basic-read_only>`,
-or it has :ref:`orphan status <replication-orphan_status>`,
-or it is a :ref:`Raft <repl_leader_elect>` follower.
+it was configured as :ref:`read_only <community:cfg_basic-read_only>`,
+or it has :ref:`orphan status <community:replication-orphan_status>`,
+or it is a :ref:`Raft <community:repl_leader_elect>` follower.
 
-IPROTO_BALLOT_IS_ANON corresponds to :ref:`box.cfg.replication_anon <cfg_replication-replication_anon>`.
+IPROTO_BALLOT_IS_ANON corresponds to :ref:`box.cfg.replication_anon <community:cfg_replication-replication_anon>`.
 
 IPROTO_BALLOT_IS_BOOTED is true if the instance has finished its
 bootstrap or recovery process.
 
-IPROTO_BALLOT_CAN_LEAD is true if the :ref:`election_mode <cfg_replication-election_mode>`
+IPROTO_BALLOT_CAN_LEAD is true if the :ref:`election_mode <community:cfg_replication-election_mode>`
 configuration setting is either 'candidate' or 'manual', so that
-during the :ref:`leader election process <repl_leader_elect_process>`
+during the :ref:`leader election process <community:repl_leader_elect_process>`
 this instance may be preferred over instances whose configuration
 setting is 'voter'.
 IPROTO_BALLOT_CAN_LEAD support was added simultaneously in
-version :doc:`2.7.3 </release/2.7.3>`
-and version :doc:`2.8.2 </release/2.8.2>`.
+version :doc:`2.7.3 <community:release/2.7.3>`
+and version :doc:`2.8.2 <community:release/2.8.2>`.
 
 ..  _box_protocol-flags:
 
 FLAGS
 ~~~~~
 
-For replication of :doc:`synchronous transactions </book/replication/repl_sync>`
+For replication of :doc:`synchronous transactions <community:book/replication/repl_sync>`
 a header may contain a key = IPROTO_FLAGS and an MP_UINT value = one or more
 bits: IPROTO_FLAG_COMMIT or IPROTO_FLAG_WAIT_SYNC or IPROTO_FLAG_WAIT_ACK.
 
@@ -1735,8 +1735,8 @@ In other words, there should be a full-mesh connection between the nodes.
         IPROTO_RAFT_VOTE: :samp:`{{MP_UINT unsigned integer}}`,     # Instance vote in the current term (if any).
         IPROTO_RAFT_STATE: :samp:`{{MP_UINT unsigned integer}}`,    # Instance state. Possible values: 1 -- follower, 2 -- candidate, 3 -- leader.
         IPROTO_RAFT_VCLOCK: :samp:`{{MP_ARRAY {{MP_INT SRV_ID, MP_INT SRV_LSN}, {MP_INT SRV_ID, MP_INT SRV_LSN}, ...}}}`,   # Current vclock of the instance. Presents only on the instances in the "candidate" state (IPROTO_RAFT_STATE == 2).
-        IPROTO_RAFT_LEADER_ID: :samp:`{{MP_UINT unsigned integer}}`,     # Current leader node ID as seen by the node that issues the request. Since version :doc:`2.10.0 </release/2.10.0>`.
-        IPROTO_RAFT_IS_LEADER_SEEN: :samp:`{{MP_BOOL boolean}}`     # Shows whether the node has a direct connection to the leader node. Since version :doc:`2.10.0 </release/2.10.0>`.
+        IPROTO_RAFT_LEADER_ID: :samp:`{{MP_UINT unsigned integer}}`,     # Current leader node ID as seen by the node that issues the request. Since version :doc:`2.10.0 <community:release/2.10.0>`.
+        IPROTO_RAFT_IS_LEADER_SEEN: :samp:`{{MP_BOOL boolean}}`     # Shows whether the node has a direct connection to the leader node. Since version :doc:`2.10.0 <community:release/2.10.0>`.
 
     })
 
@@ -1815,7 +1815,7 @@ C programmers sometimes include `msgpuck.h <https://github.com/rtsisyk/msgpuck>`
 
 Now you know how Tarantool itself makes requests with the binary protocol.
 When in doubt about a detail, consult ``net_box.c`` -- it has routines for each
-request. Some :ref:`connectors <index-box_connectors>` have similar code.
+request. Some :ref:`connectors <community:index-box_connectors>` have similar code.
 
 For an IPROTO_UPDATE example, suppose a user changes field #2 in tuple #2
 in space #256 to ``'BBBB'``. The body will look like this:
@@ -2057,4 +2057,4 @@ may be data tuples that have this form:
     +============+ +===================================+
          MP_MAP                     MP_MAP
 
-See the example in the :ref:`File formats <internals-data_persistence>` section.
+See the example in the :ref:`File formats <community:internals-data_persistence>` section.
