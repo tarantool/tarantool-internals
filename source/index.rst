@@ -11,3 +11,6 @@ Tarantool internals
    wal
    wal-fmt
    allocators
+   box_protocol
+   msgpack_extensions
+   file_formats
