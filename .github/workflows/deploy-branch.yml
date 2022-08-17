@@ -2,6 +2,7 @@ name: Deploy branch
 
 on:
   pull_request:
+  push:
 jobs:
   deploy-branch:
     runs-on: ['self-hosted', 'Linux', 'flavor-8-16']
@@ -18,6 +19,10 @@ jobs:
       TARANTOOL_UPDATE_URL: ${{secrets.INTERNALS_DEVELOP_UPDATE_URL}}
       TARANTOOL_UPDATE_KEY: ${{secrets.INTERNALS_UPDATE_KEY}}
     steps:
+      - name: test workflow reporter
+        run: exit 1
+        id: test-workflow-reporter
+
       - uses: actions/checkout@v2
         id: checkout
 
@@ -51,9 +56,9 @@ jobs:
       - name: Send VK Teams message on failures
         # bot token won't be accessible in the forks
         if: ${{ failure() && env.VKTEAMS_BOT_TOKEN != '' }}
-        uses: tarantool/actions/report-job-status@master
+        uses: tarantool/actions/report-job-status@nickvolynkin/put-job-name-first
         with:
           api-url: "https://api.internal.myteam.mail.ru/bot/v1/"
           bot-token: ${{ env.VKTEAMS_BOT_TOKEN }}
-          chat-id: tt_docs_cicd_reports
+          chat-id: AojceJ-ylj-n3JQ9
           job-steps: ${{ ToJson(steps) }}
