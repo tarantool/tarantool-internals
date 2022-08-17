@@ -63,6 +63,37 @@ div[class^="highlight"] pre {
     padding-bottom: 1px;
 }
 
+/*
+  Classes whose names start with "ccode" are a Tarantool extension,
+  see comment in conf.py file: Tarantool custom roles
+*/
+
+.ccode, .ccodeb, .ccodei, .ccodebi {
+    white-space: pre;
+    font-size: 14px;
+    font-family: monospace;
+}
+
+.ccodeb, .ccodebi {
+    font-weight: bold;
+}
+
+.ccodei, .ccodebi {
+    font-style: italic;
+}
+
+.ccodegreen, .ccodebi {
+    color: green;
+}
+
+.ccodeblue, .ccodebi {
+    color: blue;
+}
+
+.ccodered, .ccodebi {
+    color: red;
+}
+
 @media screen {
 
     /* content column

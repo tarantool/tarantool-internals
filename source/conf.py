@@ -168,6 +168,17 @@ texinfo_documents = [
      'Miscellaneous'),
 ]
 
+# Tarantool has extended Sphinx so that there are four new roles:
+# * :codenormal:`text`     displays text as monospace
+# * :codebold:`text`       displays text as monospace bold
+# * :codeitalic:`text`     displays text as monospace italic
+# * :codebolditalic:`text` displays text as monospace italic bold
+#
+# The effect on HTML output is defined in _static/css/theme_overrides.css.
+
+with open('./prolog.rst', 'r') as prolog:
+    rst_prolog = prolog.read()
+
 # -- Mapping for Intersphinx -------------------------------------------------
 
 intersphinx_mapping = {
