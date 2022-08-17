@@ -851,7 +851,7 @@ IPROTO_RAFT_CONFIRM = 0x28
 This message confirms that the transactions originated from the instance
 with id = IPROTO_REPLICA_ID have achieved quorum and can be committed,
 up to and including LSN = IPROTO_LSN.
-Prior to Tarantool :tarantool-release:`2.10.0`, IPROTO_RAFT_CONFIRM was called IPROTO_CONFIRM.
+Prior to Tarantool :doc:`v. 2.10.0 <community:release/2.10.0>`, IPROTO_RAFT_CONFIRM was called IPROTO_CONFIRM.
 
 The body is a 2-item map:
 
