@@ -82,7 +82,7 @@ REPLACE request as an example:
     procedure is begun. During the rollback procedure, the transaction processor
     rolls back all changes to the database which occurred after the first failed
     change, from latest to oldest, up to the first failed change. All rolled back
-    requests are aborted with :errcode:`ER_WAL_IO <ER_WAL_IO>` error. No new
+    requests are aborted with ``ER_WAL_IO <ER_WAL_IO>`` error. No new
     change is applied while rollback is in progress. When the rollback procedure
     is finished, the server restarts the processing pipeline.
 
