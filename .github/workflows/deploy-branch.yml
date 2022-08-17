@@ -13,29 +13,47 @@ jobs:
       S3_ENDPOINT_URL: ${{secrets.S3_ENDPOINT_URL}}
       S3_UPLOAD_PATH: ${{secrets.S3_UPLOAD_PATH}}
       S3_BUCKET: ${{secrets.S3_BUCKET}}
-      INTERNALS_UPDATE_URL: ${{secrets.INTERNALS_DEVELOP_UPDATE_URL}}
-      INTERNALS_UPDATE_KEY: ${{secrets.INTERNALS_UPDATE_KEY}}
-      BRANCH_NAME: test
+      DEPLOYMENT_NAME: test
+      VKTEAMS_BOT_TOKEN: ${{secrets.VKTEAMS_TARANTOOLBOT_TOKEN}}
+      TARANTOOL_UPDATE_URL: ${{secrets.INTERNALS_DEVELOP_UPDATE_URL}}
+      TARANTOOL_UPDATE_KEY: ${{secrets.INTERNALS_UPDATE_KEY}}
     steps:
       - uses: actions/checkout@v2
+        id: checkout
 
       - name: Start dev server deployment
-        uses: bobheadxi/deployments@v0.5.2
+        uses: bobheadxi/deployments@v1
         id: deployment
         with:
           step: start
           token: ${{secrets.GITHUB_TOKEN}}
-          env: ${{env.BRANCH_NAME}}
+          env: ${{env.DEPLOYMENT_NAME}}
           ref: ${{github.head_ref}}
 
       - run: make -f ci.mk json
+        id: make-json
       - run: bash upload_output.sh
+        id: upload-output
+
+      - run: bash webhooks/update_deployment.sh
+        id: update-deployment-webhook
 
       - name: update deployment status
-        uses: bobheadxi/deployments@v0.5.2
+        uses: bobheadxi/deployments@v1
         with:
           step: finish
           token: ${{secrets.GITHUB_TOKEN}}
+          env: ${{env.DEPLOYMENT_NAME}}
           status: ${{job.status}}
           deployment_id: ${{steps.deployment.outputs.deployment_id}}
           env_url: ${{secrets.TARANTOOL_HOST}}
+
+      - name: Send VK Teams message on failures
+        # bot token won't be accessible in the forks
+        if: ${{ failure() && env.VKTEAMS_BOT_TOKEN != '' }}
+        uses: tarantool/actions/report-job-status@master
+        with:
+          api-url: "https://api.internal.myteam.mail.ru/bot/v1/"
+          bot-token: ${{ env.VKTEAMS_BOT_TOKEN }}
+          chat-id: tt_docs_cicd_reports
+          job-steps: ${{ ToJson(steps) }}
