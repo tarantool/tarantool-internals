@@ -2,3 +2,6 @@
 patches/
 
 build/
+
+# secrets for running webhooks locally
+webhooks/.env
