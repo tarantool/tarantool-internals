@@ -1,3 +1,5 @@
+.. _replication:
+
 Replication
 ===========
 
@@ -441,8 +443,8 @@ Side note: there are two triggers assigned to ``applier->on_state``.
 The first one is new ``applier_on_state_f`` and second is
 ``replica_on_applier_state_f``. The triggers are running in the sequence
 above but neet to mention than ``applier_on_state_f`` is one time trigger,
-once fired it get cleaned up while ``replica_on_applier_state_f`` is premanent.
-And to refresh memory these triggers are running from
+once fired it get cleaned up while ``replica_on_applier_state_f`` is
+premanent. And to refresh memory these triggers are running from
 ``applier_f: applier_set_state``.
 
 The ``applier_resume_to_state`` kicks the applier of a chosen leader.
