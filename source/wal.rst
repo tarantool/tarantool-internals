@@ -29,21 +29,22 @@ but only one must be activated via ``journal_set``).
 The ``journal_entry_new`` requires a callback to be associated
 with the journal entry to be called when entry processing is complete
 (with success or failure). Since we use journal to process database
-transactions we pass ``txn_entry_complete_cb`` as a callback
-and a pointer to the transaction itself as a data.
+transactions we pass ``txn_on_journal_write`` as a callback and a
+pointer to the transaction itself as a data.
 
 To explain in details how transactions are processed on journal
 level we need to look at transaction structure (short version
-to be precise, only with the memebers we're interesed in).
+to be precise, only with the members we're interesed in).
 
 .. code-block:: c
 
+    /* box/txn.h */
     struct txn {
-        /* transaction cache */
+        /* Transaction cache */
         struct stailq_entry in_txn_cache;
-        /* memory to keep transaction data */
+        /* Memory to keep transaction data */
         struct region region;
-        /* transaction ID */
+        /* Transaction ID */
         int64_t id;
         /* LSN assigned by WAL or -1 on error */
         int64_t signature;
@@ -57,18 +58,19 @@ where we allocate the ``txn`` itself and may increase memory usage if
 ``txn`` need additional data to carry. On ``txn_free`` the additional
 memory get freed and we put ``txn`` to cache for fast reuse.
 
-The ``txn_entry_complete_cb`` is basically a wrapper over
-``txn_complete``.
+TODO: describe ``tx_on_journal_write``
+TODO: mention that the use of journal and transactions are described below
 
 WAL thread
 ----------
 
-Because writting data to the real storage such as hardware drive
+Because writing data to the real storage such as hardware drive
 is a way too slower than plain memory access the storage operations
 are implemented in a separate thread.
 
 .. code-block:: c
 
+    /* box/wal.c */
     int
     wal_init(enum wal_mode wal_mode, const char *wal_dirname,
              int64_t wal_max_size, const struct tt_uuid *instance_uuid,
@@ -94,42 +96,24 @@ are implemented in a separate thread.
 
 The ``writer->cord`` points to the statically allocated
 ``wal_writer_singleton``. In ``cord_costart`` we start
-a new cord
+a new cord. Once the new cord is initialized its event loop
+runs ``wal_writer_f``:
 
 .. code-block:: c
 
-    cord_costart
-        ...
-        cord_start(cord, name, cord_costart_thread_func, ctx)
-            ...
-            cord->loop = ev_loop_new()
-            ...
-            tt_pthread_create(cord_thread_func)
-                // New thread
-                cord_thread_func
-                    cord_create
-                    cord_costart_thread_func
-                        fiber_new("main", wal_writer_f);
-                            wal_writer_f
-    
-Once the new event loop is allocated this thread runs ``wal_writer_f``
-
-.. code-block:: c
-
+    /* box/wal.c */
     static int
     wal_writer_f(va_list ap)
         struct wal_writer *writer = &wal_writer_singleton;
-        // Init coio in this thread
+
+        /* Initialize eio in this thread */
         coio_enable();
     
-        // This is new thread and new cord thus
-        // we need own fiber scheduler, this is
-        // event consumer.
+        // This is new thread and new cord thus we need own fiber scheduler
         struct cbus_endpoint endpoint;
         cbus_endpoint_create(&endpoint, "wal", fiber_schedule_cb, fiber());
     
-        // This one is event producer from wal thread to
-        // the main thread.
+        // This one is event producer from wal thread to the main thread.
         cpipe_create(&writer->tx_prio_pipe, "tx_prio");
     
         // Enter the event loop
@@ -137,85 +121,21 @@ Once the new event loop is allocated this thread runs ``wal_writer_f``
         ...
 
 We're running a new thread with own event loop and a fiber scheduler.
-To communicate with this cord we use communication bus (``cbus``) engine
-(the very rought ``cbus`` arhitecure is the following: there are endpoints
-with names which are event consumers, and cpipe peers which are event producers;
-producer push an event into endpoints and ``cbus`` deliver a message to
-the destination by specified routes).
-
-The ``cbus_endpoint_create`` creates ``"wal"`` endpoint which is
-an event consumer (ie inside newly created wal thread).
+To communicate with this cord and others we use communication bus
+(:ref:`cbus`) engine. ``wal`` endpoint, which will be used by other cords
+to send messages to the wal thread, and ``writer->tx_prio_pipe``, which
+serves as a way for wal thread to communicate with the main tarantool
+thread, are created.
 
 .. code-block:: c
 
-    int
-    cbus_endpoint_create(struct cbus_endpoint *endpoint,
-                         const char *name,
-                         void (*fetch_cb)(...),
-                         void *fetch_data)
-    {
-        ...
-        snprintf(endpoint->name, sizeof(endpoint->name), "%s", name);
-        endpoint->consumer = loop();
-        ...
-        ev_async_init(&endpoint->async, fetch_cb);
-        endpoint->async.data = fetch_data;
-        ev_async_start(endpoint->consumer, &endpoint->async);
-    }
-
-Right after creating the consumer we make an event producer
-``writer->tx_prio_pipe``.
-
-.. code-block:: c
-
-    void
-    cpipe_create(struct cpipe *pipe, const char *consumer)
-    {
-        ...
-        pipe->producer = cord()->loop;
-    
-        ev_async_init(&pipe->flush_input, cpipe_flush_cb);
-        pipe->flush_input.data = pipe;
-    
-        struct cbus_endpoint *endpoint =
-            cbus_find_endpoint_locked(&cbus, consumer);
-        ...
-        pipe->endpoint = endpoint;
-    }
-
-Note that ``writer->tx_prio_pipe`` connects to the endpoint
-allocated in the main tarantool thread.
-
-.. code-block:: c
-
+    /* box/box.cc */
     box_cfg_xc(void)
         ...
         cbus_endpoint_create(&tx_prio_endpoint, "tx_prio", tx_prio_cb...);
 
-Thus we have two endpoints - ``"wal"`` which sits in the wal thread and
-``"tx_prio"`` which sits in the main tarantool thread. This allows us to
-notify wal thread from main thread via ``"wal"`` endpoint and reverse
-via ``"tx_prio"`` endpoint.
-
 Back to ``wal_writer_f`` code: we enter the event loop ``cbus_loop``
-and wait for events to to appear (via traditional ``libev`` delivery).
-
-.. code-block:: c
-
-    void
-    cbus_loop(struct cbus_endpoint *endpoint)
-    {
-        while (true) {
-            cbus_process(endpoint);
-            if (fiber_is_cancelled())
-                break;
-            fiber_yield();
-        }
-    }
-
-The ``cbus_process`` above fetches message from a queue and
-process them (or we call it ``cmsg_deliver`` which is basically
-a chain of function pointers and cpipes to notify).
+and wait for events to appear (via traditional ``libev`` delivery).
 
 Now back to ``wal_init``. The wal thread is running but we need
 to push the messages to it from our side. For this sake we create
@@ -223,6 +143,7 @@ a communication pipe (cpipe).
 
 .. code-block:: c
 
+    /* box/wal.c */
     wal_init
         ...
         /* Create a pipe to WAL thread. */
@@ -249,14 +170,16 @@ which has a complete set of data to be written in a one pass.
 
 .. code-block:: c
 
+    /* box/journal.h */
     struct journal_entry {
         // To link entries
         struct stailq_entry         fifo;
         // vclock or error code
         int64_t                     res;
         // transaction completions
-        journal_entry_complete_cb   on_complete_cb;
-        void                        *on_complete_cb_data;
+        journal_write_async_f write_async_cb;
+        void *complete_data;
+        bool is_complete;
         // real user data to write
         size_t                      approx_len;
         int                         n_rows;
@@ -268,76 +191,58 @@ but need to point that entries are chained via ``fifo`` member
 and comes in strict order to be able to rollback if something goes
 wrong.
 
-
 Once allocated the entry is passed to
 
 .. code-block:: c
 
+    /* box/wal.c */
     static int
-    wal_write(struct journal *journal, struct journal_entry *entry)
+    wal_write_async(struct journal *journal, struct journal_entry *entry)
+    {
         ...
-        batch = (struct wal_msg *)mempool_alloc(&writer->msg_pool);
-        wal_msg_create(batch);
-        stailq_add_tail_entry(&batch->commit, entry, fifo);
-        cpipe_push(&writer->wal_pipe, &batch->base);
+        if (!stailq_empty(&writer->wal_pipe.input) &&
+            (batch = wal_msg(stailq_first_entry(&writer->wal_pipe.input,
+                            struct cmsg, fifo)))) {
+
+            stailq_add_tail_entry(&batch->commit, entry, fifo);
+        } else {
+            batch = (struct wal_msg *)mempool_alloc(&writer->msg_pool);
+            wal_msg_create(batch);
+            stailq_add_tail_entry(&batch->commit, entry, fifo);
+            cpipe_push(&writer->wal_pipe, &batch->base);
+        }
         ...
         cpipe_flush_input(&writer->wal_pipe);
+        ...
+    }
 
 Here we allocate the communication record (``wal_msg_create``)
 then bind journal entry into it, push it into ``writer->wal_pipe``
 and notify the producer that there is data to handle. Note that
 notification does not mean the data gonna be handled immediately
 but get queued into the event loop. The loop here is our main cord
-loop (remember as we create ``writer->wal_pipe`` in ``wal_write``).
+loop (remember as we create ``writer->wal_pipe`` in ``wal_init``).
 
-Once main loop start handling this message it calls a callback
-associated with this wal pipe
+If the batch already exists in the message queue, which is intended to be
+sent to the wal thread, we just add an entry to it.
 
-.. code-block:: c
-
-    static inline void
-    cpipe_flush_input(struct cpipe *pipe)
-    {
-        ...
-        if (pipe->n_input < pipe->max_input) {
-            ev_feed_event(pipe->producer,
-                          &pipe->flush_input, EV_CUSTOM);
-        } else {
-            ev_invoke(pipe->producer,
-                      &pipe->flush_input, EV_CUSTOM);
-        }
-    }
-
-The associated call is
+After that the notification is pushed to the wal thread Once notification
+received it runs a callback which has been initialized earlier in
+``wal_write_async``:
 
 .. code-block:: c
 
-    static void
-    cpipe_flush_cb(ev_loop *loop, struct ev_async *watcher, int events)
-    {
-        struct cbus_endpoint *endpoint = pipe->endpoint;
-        ...
-        stailq_concat(&endpoint->output, &pipe->input);
-        ...
-        ev_async_send(endpoint->consumer, &endpoint->async);
-    }
-
-The ``endpoint`` belongs to wal-thread event loop to
-which we send the notifcation. Once notification received
-it runs a callback which has been initialized earlier in
-``wal_write``
-
-.. code-block:: c
-
-    wal_write(struct journal *journal, struct journal_entry *entry)
+    /* box/wal.c */
+    wal_write_async(struct journal *journal, struct journal_entry *entry)
         ...
         wal_msg_create(batch);
         ...
 
-where
+where:
 
 .. code-block:: c
 
+    /* box/wal.c */
     static struct cmsg_hop wal_request_route[] = {
         {wal_write_to_disk, &wal_writer_singleton.tx_prio_pipe},
         {tx_schedule_commit, NULL},
@@ -351,14 +256,10 @@ where
     }
 
 
-In other words the ``cbus_loop`` inside wal thread wakes
+The ``cbus_loop`` inside wal thread wakes
 and fetches the message (we're sharing memory between main
 tarantool thread and wal thread) and manage that named "route"
 functions one by one in direct order.
-
-The routing functions are a bit tricky: the first argument
-is the function to call and the second is the cpipe to feed
-event to once function is complete.
 
 First the ``wal_write_to_disk`` tries to write journal entries
 in a batch to the storage. Actually it does a way more than
@@ -372,6 +273,7 @@ and then ``tx_schedule_commit`` is running inside main thread.
 
 .. code-block:: c
 
+    /* box/wal.c */
     static void
     tx_schedule_queue(struct stailq *queue)
     {
@@ -419,11 +321,13 @@ the main cord
 
 .. code-block:: c
 
+    /* box/txn.c */
     struct txn *
     txn_begin(bool is_autocommit)
     {
         static int64_t txn_id = 0;
         struct txn *txn = region_alloc_object(&fiber()->gc, struct txn);
+        ...
         txn->id = ++txn_id;
         txn->signature = -1;
         txn->engine = NULL;
@@ -441,6 +345,7 @@ is set to vclock upon transaction completion by the wal engine.
 
 .. code-block:: c
 
+    /* box/txn.c */
     int
     txn_commit(struct txn *txn)
     {
@@ -454,6 +359,7 @@ is set to vclock upon transaction completion by the wal engine.
             if (txn->signature < 0)
                 goto fail;
         }
+        ...
         if (txn->engine != NULL)
             engine_commit(txn->engine, txn);
     
@@ -471,6 +377,7 @@ it to the wal thread.
 
 .. code-block:: c
 
+    /* box/txn.c */
     static int64_t
     txn_write_to_wal(struct txn *txn)
     {
@@ -494,6 +401,7 @@ in ``journal_entry`` structure.
 
 .. code-block:: c
 
+    /* box/wal.c */
     // main cord thread
     wal_write
         // notify wal thread about queued data
@@ -529,34 +437,31 @@ Transactions processing in 2.x series
 
 The transaction processing in 2.x series is almost the same
 as in 1.x with one significant exception - journal writes
-became asynchronous. We bind callback ``txn_entry_complete_cb``
+became asynchronous. We bind callback ``txn_on_journal_write``
 to the journal entry which completes the transaction. This
 has been done in the sake of parallel applier (which is heavily
 used in replication engine).
 
 Thus the ``txn_write`` routine does not wait for transaction
-to complete, still for synchrounous transactions we wait explicitly
+to complete, still for synchronous transactions we wait explicitly
 until the journal callback finished
 
 .. code-block:: c
 
+    /* box/txn.c */
     int
     txn_commit(struct txn *txn)
     {
-        txn->fiber = fiber();
-    
-        // Async processing
-        if (txn_write(txn) != 0)
-            return -1;
-    
-        // Wait for completion
-        if (!txn_has_flag(txn, TXN_IS_DONE)) {
-            bool cancellable = fiber_set_cancellable(false);
-            fiber_yield();
-            fiber_set_cancellable(cancellable);
-        }
-    
-        int res = txn->signature >= 0 ? 0 : -1;
-        txn_free(txn);
-        return res;
+        struct journal_entry *req;
+        ...
+        req = txn_journal_entry_new(txn);
+            /* txn_journal_entry_new code */
+            ...
+            req = journal_entry_new(txn->n_new_rows + txn->n_applier_rows + 1,
+                txn_region, txn_on_journal_write, txn);
+        ...
+        if (journal_write(req) != 0)
+            goto rollback_io;
+
+        ...
     }

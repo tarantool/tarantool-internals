@@ -11,3 +11,4 @@ Tarantool internals
    wal
    wal-fmt
    allocators
+   cbus
