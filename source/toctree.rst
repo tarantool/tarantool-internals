@@ -12,3 +12,4 @@
    wal
    wal-fmt
    allocators
+   cbus
