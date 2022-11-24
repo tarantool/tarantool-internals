@@ -1,4 +1,7 @@
 .. vim: ts=4 sw=4 et
+
+:html_theme.sidebar_secondary.remove:
+
 .. _wal:
 
 Write-ahead logging
