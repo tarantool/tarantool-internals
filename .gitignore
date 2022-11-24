@@ -1,7 +1,8 @@
 .git-ignore/
 patches/
-
 build/
+.idea
+.DS_Store
 
 # secrets for running webhooks locally
 webhooks/.env
