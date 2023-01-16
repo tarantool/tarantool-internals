@@ -32,7 +32,10 @@ Tarantool, передаёт запрос в TX тред и запускает п
  - ``мир мертвых`` -- iproto тред.
 
 (Пока такая картинка, чуть позже сделаю анимацию)
-![Iproto](_static/images/iproto.svg)
+.. figure:: _static/images/iproto.svg
+    :alt: Архитектура iproto
+
+    Архитектура iproto
 
 На gif'ке изображено следующее: ``cbus message`` инициируется в тот момент
 когда данные появляются в ``TX`` треде. Далее с помощью ``cbus message``
