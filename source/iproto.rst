@@ -33,7 +33,7 @@ Tarantool, передаёт запрос в TX тред и запускает п
 
 (Пока такая картинка, чуть позже сделаю анимацию)
 
-.. figure:: /_static/images/iproto.svg
+.. figure:: /source/_static/images/iproto.svg
     :alt: Архитектура iproto
 
     Архитектура iproto
