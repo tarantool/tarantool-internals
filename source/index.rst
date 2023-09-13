@@ -12,3 +12,4 @@ Tarantool internals
    wal-fmt
    allocators
    cbus
+   ports
