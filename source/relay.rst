@@ -32,14 +32,14 @@ the applier:
 
 .. code-block:: c
 
-    /* box/iproto.cc */
+    /* src/box/iproto.cc */
     static void
     tx_process_replication(struct cmsg *m)
     {
         ...
         switch (msg->header.type) {
         case IPROTO_JOIN:
-            box_process_join(&io, &msg->header);
+            box_process_join(io, &msg->header);
             break;
 
 ``box_process_join()`` is invoked on receiving of the join code. Firstly,
@@ -47,55 +47,53 @@ we initialize joining procedure:
 
 .. code-block:: c
 
-    /* box/box.cc */
+    /* src/box/box.cc */
     void
-    box_process_join(struct ev_io io, struct xrow_header *header)
+    box_process_join(struct iostream *io, const struct xrow_header *header)
     {
         ...
-        xrow_decode_join_xc(header, &instance_uuid, &replica_version_id);
+        struct join_request req;
+        xrow_decode_join_xc(header, &req);
 
         /* Check that bootstrap has been finished */
         if (!is_box_configured)
             tnt_raise(ClientError, ER_LOADING);
         ...
-	    /* Check permissions */
-	    access_check_universe_xc(PRIV_R);
-        ...
         /* Add to _cluster space */
-        struct replica *replica = replica_by_uuid(&instance_uuid);
-        if (replica == NULL || replica->id == REPLICA_ID_NIL) {
+        struct replica *replica = replica_by_uuid(&req.instance_uuid);
+        if (replica == NULL || replica->id == REPLICA_ID_NIL ||
+            strcmp(replica->name, req.instance_name) != 0) {
             box_check_writable_xc();
             struct space *space = space_cache_find_xc(BOX_CLUSTER_ID);
             access_check_space_xc(space, PRIV_W);
         }
 
-        /* Forbid replication with disabled WAL */
-        if (wal_mode() == WAL_NONE) {
-            tnt_raise(ClientError, ER_UNSUPPORTED, ...)
-        }
-
-        /* Register the replica as a WAL consumer so that */
-        struct gc_consumer *gc = gc_consumer_register(&replicaset.vclock,
-                    "replica %s", tt_uuid_str(&instance_uuid));
-        auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
+        ...
+        /* Check permissions, WAL mode and register as a WAL consumer */
+        auto replica_guard = box_connect_replica(&req.instance_uuid,
+                                                 instance_vclock, &replica);
 
 We make sure that replica has enough permissons, our node is ready for join
 (it's WAL is enabled, configuration has finished) and register the consumer,
 the purpose of which is to be sure that WAL file is not rotated while there
 are some records which are not yet sent to that replica. This way final stage
-of join can resume where initial one ends.
+of join can resume where initial one ends. These steps are now encapsulated in
+``box_connect_replica()``: it calls ``access_check_universe_xc(PRIV_R)``,
+forbids replication with ``wal_mode = 'none'`` and registers a
+``GC_CONSUMER_REPLICA`` consumer via ``gc_consumer_register()``.
 
 Then we create the relay instance for the initial JOIN itself:
 
 .. code-block:: c
 
-    /* box/box.cc */
+    /* src/box/box.cc */
     void
-    box_process_join(struct ev_io *io, struct xrow_header *header)
+    box_process_join(struct iostream *io, const struct xrow_header *header)
     {
         ...
         struct vclock start_vclock;
-        relay_initial_join(io->fd, header->sync, &start_vclock);
+        relay_initial_join(io, header->sync, &start_vclock, req.version_id,
+                           NULL);
             /* relay_initial_join() code */
             struct relay *relay = relay_new(NULL);
             relay_start(relay, io, sync, relay_send_initial_join_row,
@@ -105,33 +103,15 @@ Then we create the relay instance for the initial JOIN itself:
             struct engine_join_ctx ctx;
             engine_prepare_join_xc(&ctx);
             ...
-            wal_sync(vclock)
-            ...
-            txn_limbo_wait_confirm(&txn_limbo)
-            ...
-            txn_limbo_checkpoint(&txn_limbo, &req);
-            box_raft_checkpoint_local(&raft_req);
+            struct box_checkpoint box_ckpt;
+            box_checkpoint_build_in_memory(&box_ckpt);
             ...
             /* Respond to the JOIN request with the current vclock. */
-            xrow_encode_vclock_xc(&row, vclock);
-            coio_write_xrow(relay->io, &row);
+            send_join_header(&relay->stream, &box_ckpt.journal.vclock);
 
             /* JOIN_META */
-            if (replica_version_id > 0) {
-                xrow_encode_type(&row, IPROTO_JOIN_META);
-                xstream_write(&relay->stream, &row);
-
-                xrow_encode_raft(&row, &fiber()->gc, &raft_req);
-                xstream_write(&relay->stream, &row);
-
-                char body[XROW_SYNCHRO_BODY_LEN_MAX];
-                xrow_encode_synchro(&row, body, &req);
-                row.replica_id = req.replica_id;
-                xstream_write(&relay->stream, &row);
-
-                xrow_encode_type(&row, IPROTO_JOIN_SNAPSHOT);
-                xstream_write(&relay->stream, &row);
-            }
+            if (replica_version_id > 0)
+                send_join_meta(&relay->stream, &box_ckpt);
 
             /* Send read view to the replica. */
             engine_join_xc(&ctx, &relay->stream);
@@ -141,50 +121,50 @@ The ``relay_initial_join`` sends a stream of engine-specific rows (e.g.
 snapshot rows for memtx or dirty cursor data for Vinyl fed from a read-view)
 to the remote replica.
 
-For this the function creates new relay structure and prepares data to be
-sent. Firstly, we create a new relay structure and get a read view from
-engine, after that we save the state of the limbo, which stores synchronous
-transactions in progress of collecting ACKs from replicas, state of the raft
-protocol in messages, which will be sent lately in JOIN META stage if the
-protocol of the replica supports this stage. At the end we send a read view
-with all the meta information we gathered and free ``relay`` instance upon
-completion.
+For this the function creates new relay structure and gets a read view from
+engine, after that it collects the checkpoint state (``struct box_checkpoint``)
+which includes the limbo state, storing synchronous transactions in progress
+of collecting ACKs from replicas, and the raft state. Both are sent in the
+JOIN META stage if the protocol of the replica supports this stage. At the end
+we send a read view with all the meta information we gathered and free
+``relay`` instance upon completion.
 
 Then we continue joining procedure
 
 .. code-block:: c
 
-    /* box/box.cc */
+    /* src/box/box.cc */
     void
-    box_process_join(struct ev_io *io, struct xrow_header *header)
+    box_process_join(struct iostream *io, const struct xrow_header *header)
     {
         ...
-        /* Check for replicaid or register new one */
-        box_on_join(&instance_uuid);
+        /* Register the replica */
+        box_register_replica(&req.instance_uuid, req.instance_name);
         ...
         /* Master's vclock */
         struct vclock stop_vclock;
-        vclock_copy(&stop_vclock, &replicaset.vclock);
+        vclock_copy(&stop_vclock, instance_vclock);
 
         /* Send it to the peer */
         struct xrow_header row;
-        xrow_encode_vclock_xc(&row, &stop_vclock);
+        xrow_encode_vclock_ignore0(&row, &stop_vclock);
         row.sync = header->sync;
         coio_write_xrow(io, &row);
 
         /* The WAL range (start_vclock; stop_vclock) with rows */
-        relay_final_join(io->fd, header->sync, &start_vclock, &stop_vclock);
+        relay_final_join(replica, io, header->sync, &start_vclock,
+                         &stop_vclock);
 
         /* End of WAL marker */
-        xrow_encode_vclock_xc(&row, &replicaset.vclock);
+        xrow_encode_vclock_ignore0(&row, instance_vclock);
         row.sync = header->sync;
         coio_write_xrow(io, &row);
 
         /* Advance the consumer position */
-        gc_consumer_advance(gc, &stop_vclock);
+        gc_consumer_advance(replica->gc, &stop_vclock);
         ...
 
-We fetch master's node vclock (the ``replicaset.vclock`` is updated
+We fetch master's node vclock (the ``instance_vclock`` is updated
 by WAL engine upon on commit when data is already written to the storage)
 and send it out. Then we send the vclock range from ``start_vclock``
 to ``stop_vclock`` together with rows bound to the range and end it
@@ -194,22 +174,22 @@ The ``relay_final_join`` is a bit tricky:
 
 .. code-block:: c
 
-    /* box/relay.cc */
+    /* src/box/relay.cc */
     void
-    relay_final_join(int fd, uint64_t sync, struct vclock *start_vclock,
-                     struct vclock *stop_vclock)
+    relay_final_join(struct replica *replica, struct iostream *io,
+                     uint64_t sync, const struct vclock *start_vclock,
+                     const struct vclock *stop_vclock)
     {
-        struct relay *relay = relay_new(NULL);
+        struct relay *relay = replica->relay;
         ...
-        relay_start(relay, fd, sync, relay_send_row);
-            ...
-            relay->state = RELAY_FOLLOW;
+        relay_start(relay, io, sync, relay_process_row, relay_yield,
+                    UINT64_MAX);
         ...
-        relay->r = recovery_new(cfg_gets("wal_dir"), false,
-                                start_vclock);
+        relay->r = recovery_new(wal_dir(), 0, start_vclock);
         vclock_copy(&relay->stop_vclock, stop_vclock);
 
-        int rc = cord_costart(&relay->cord, "final_join",
+        struct cord cord;
+        int rc = cord_costart(&cord, "final_join",
                               relay_final_join_f, relay);
         ...
     }
@@ -227,7 +207,7 @@ prepare our node to send local updates to the peer.
 
 .. code-block:: c
 
-    /* box/iproto.cc */
+    /* src/box/iproto.cc */
     static void
     tx_process_replication(struct cmsg *m)
     {
@@ -235,7 +215,7 @@ prepare our node to send local updates to the peer.
         switch (msg->header.type) {
         ...
         case IPROTO_SUBSCRIBE:
-            box_process_subscribe(&io, &msg->header);
+            box_process_subscribe(io, &msg->header);
             break;
         ...
 
@@ -247,22 +227,25 @@ The handler is pretty self-explaining:
 
 .. code-block:: c
 
-    /* box/box.cc */
+    /* src/box/box.cc */
     void
-    box_process_subscribe(struct ev_io *io, struct xrow_header *header)
+    box_process_subscribe(struct iostream *io, const struct xrow_header *header)
     {
         ...
         /* Get vclock of the remote peer */
-        xrow_decode_subscribe_xc(header, NULL, &replica_uuid, &replica_clock,
-                                 &replica_version_id, &anon, &id_filter);
+        struct subscribe_request req;
+        xrow_decode_subscribe_xc(header, &req);
         ...
         /* Remember current WAL clock */
-        vclock_create(&vclock);
-        vclock_copy(&vclock, &replicaset.vclock);
+        struct subscribe_response rsp;
+        memset(&rsp, 0, sizeof(rsp));
+        vclock_copy(&rsp.vclock, instance_vclock);
+        rsp.replicaset_uuid = REPLICASET_UUID;
+        strlcpy(rsp.replicaset_name, REPLICASET_NAME, NODE_NAME_SIZE_MAX);
 
         /* Send it to the peer */
         struct xrow_header row;
-        xrow_encode_subscribe_response_xc(&row, &REPLICASET_UUID, &vclock);
+        xrow_encode_subscribe_response(&row, &rsp);
 
         /* Send replica id to the peer */
         struct replica *self = replica_by_uuid(&INSTANCE_UUID);
@@ -270,42 +253,47 @@ The handler is pretty self-explaining:
         row.sync = header->sync;
         coio_write_xrow(io, &row);
 
-        if (replica_version_id >= version_id(2, 6, 0) && !anon) {
+        if (req.version_id >= version_id(2, 6, 0) && !req.is_anon) {
             /* Send raft state */
-            struct raft_request req;
-            box_raft_checkpoint_remote(&req);
-            xrow_encode_raft(&row, &fiber()->gc, &req);
+            struct raft_request raft_req;
+            box_raft_checkpoint_remote(&raft_req);
+            xrow_encode_raft(&row, &fiber()->gc, &raft_req);
+            relay_filter_raft(&row, req.version_id);
             coio_write_xrow(io, &row);
-            sent_raft_term = req.term;
+            sent_raft_term = raft_req.term;
         }
 
         /* Set 0 component to ours 0 component value */
-        vclock_reset(&replica_clock, 0, vclock_get(&replicaset.vclock, 0));
+        box_localize_vclock(&req.vclock, &start_vclock);
 
         /* Initiate subscription procedure */
-        relay_subscribe(replica, io->fd, header->sync, &replica_clock,
-                        replica_version_id, id_filter);
+        relay_subscribe(replica, io, header->sync, &start_vclock,
+                        req.version_id, req.id_filter, sent_raft_term);
     }
 
 The subscription routine runs until explicitly cancelled:
 
 .. code-block:: c
 
-    /* box/relay.cc */
+    /* src/box/relay.cc */
     void
-    relay_subscribe(struct replica *replica, int fd, uint64_t sync,
-                    struct vclock *replica_clock, uint32_t replica_version_id,
-                    uint32_t replica_id_filter)
+    relay_subscribe(struct replica *replica, struct iostream *io, uint64_t sync,
+                    const struct vclock *start_vclock,
+                    uint32_t replica_version_id, uint32_t replica_id_filter,
+                    uint64_t sent_raft_term)
     {
         struct relay *relay = replica->relay;
         ...
-        relay_start(relay, fd, sync, relay_send_row);
+        relay_start(relay, io, sync, relay_process_row,
+                    relay_subscribe_on_wal_yield_f, sent_raft_term);
         ...
-        vclock_copy(&relay->local_vclock_at_subscribe, &replicaset.vclock);
-        relay->r = recovery_new(cfg_gets("wal_dir"), false, replica_clock);
-        vclock_copy(&relay->tx.vclock, replica_clock);
+        vclock_copy(&relay->local_vclock_at_subscribe, instance_vclock);
+        relay->r = recovery_new(wal_dir(), RECOVERY_SUPPRESS_LOGGING,
+                                start_vclock);
+        vclock_copy_ignore0(&relay->tx.vclock, start_vclock);
         ...
-        int rc = cord_costart(&relay->cord, "subscribe",
+        struct cord cord;
+        int rc = cord_costart(&cord, "subscribe",
                               relay_subscribe_f, relay);
         ...
     }
@@ -315,14 +303,13 @@ The ``relay->r = recovery_new`` provides us access to the WAL files while
 
 .. code-block:: c
 
-    /* box/relay.cc */
+    /* src/box/relay.cc */
     static int
     relay_subscribe_f(va_list ap)
     {
         struct relay *relay = va_arg(ap, struct relay *);
 
-        coio_enable();
-        relay_set_cord_name(relay->io->fd);
+        relay_cord_init(relay);
 
         cbus_endpoint_create(&relay->tx_endpoint,
                      tt_sprintf("relay_tx_%p", relay),
@@ -336,13 +323,13 @@ The ``relay->r = recovery_new`` provides us access to the WAL files while
                      fiber_schedule_cb, fiber());
         ...
         /* Setup WAL watcher for sending new rows to the replica. */
-        wal_set_watcher(&relay->wal_watcher, relay->endpoint.name,
+        wal_set_watcher(&relay->wal_watcher, relay->wal_endpoint.name,
                         relay_process_wal_event, cbus_process);
 
         /* Start fiber for receiving replica acks. */
         char name[FIBER_NAME_MAX];
         snprintf(name, sizeof(name), "%s:%s", fiber()->name, "reader");
-        struct fiber *reader = fiber_new_xc(name, relay_reader_f);
+        struct fiber *reader = fiber_new(name, relay_reader_f);
         fiber_set_joinable(reader, true);
         fiber_start(reader, relay, fiber());
 
@@ -354,7 +341,7 @@ Firstly, we create ``relay->tx_endpoint`` endpoint,and pair it
 with ``tx`` endpoint. Once paired we will have ``relay->tx_pipe``
 which serves as a uni-directional queue from ``relay`` thread to
 ``tx`` and ``relay->relay_pipe`` - from ``tx`` to ``relay``.
-``relay_thread_on_start()`` sets ``relay->tx.is_raft_enabled``
+``relay_thread_on_start()`` sets ``relay->tx.is_paired``
 saying to ``tx`` that relay is ready to accept raft pushes
 (see ``relay_push_raft()`` below).
 
@@ -390,7 +377,7 @@ the master. Heartbeats are also sent in this fiber.
 
 .. code-block:: c
 
-    /* box/relay.cc */
+    /* src/box/relay.cc */
     static int
     relay_subscribe_f(va_list ap)
     {
@@ -406,53 +393,68 @@ the master. Heartbeats are also sent in this fiber.
                          relay->last_row_time + timeout);
 
             ...
-            cbus_process(&relay->tx_endpoint);
             cbus_process(&relay->wal_endpoint);
-
-            /* Send the heartbeat if needed */
-            relay_send_heartbeat_on_timeout(relay);
-
-            /*
-             * Check that the vclock has been updated and the previous
-             * status message is delivered
-             */
-            if (relay->status_msg.msg.route != NULL)
-                continue;
-
-            struct vclock *send_vclock;
-            if (relay->version_id < version_id(1, 7, 4))
-                send_vclock = &relay->r->vclock;
-            else
-                send_vclock = &relay->recv_vclock;
-
-            /* Collect xlog files received by the replica. */
-            relay_schedule_pending_gc(relay, send_vclock);
-
-            /* Nothing to do */
-            double tx_idle = ev_monotonic_now(loop()) - relay->tx_seen_time;
-            if (vclock_sum(&relay->status_msg.vclock) ==
-                vclock_sum(send_vclock) && tx_idle <= timeout &&
-                relay->status_msg.vclock_sync == relay->recv_vclock_sync)
-                continue;
-            static const struct cmsg_hop route[] = {
-                {tx_status_update, NULL}
-            };
-            cmsg_init(&relay->status_msg.msg, route);
-            vclock_copy(&relay->status_msg.vclock, send_vclock);
-            relay->status_msg.txn_lag = relay->txn_lag;
-            relay->status_msg.relay = relay;
-            relay->status_msg.vclock_sync = relay->recv_vclock_sync;
-            cpipe_push(&relay->tx_pipe, &relay->status_msg.msg);
+            relay_subscribe_update(relay);
+            ...
         }
         ...
+    }
+
+    static void
+    relay_subscribe_update(struct relay *relay)
+    {
+        struct errinj *inj = errinj(ERRINJ_RELAY_FROM_TX_DELAY, ERRINJ_BOOL);
+        if (inj == NULL || !inj->bparam)
+            cbus_process(&relay->tx_endpoint);
+        relay_send_heartbeat_on_timeout(relay);
+        relay_check_status_needs_update(relay);
+    }
+
+    static void
+    relay_check_status_needs_update(struct relay *relay)
+    {
+        struct applier_heartbeat *last_recv_ack = &relay->last_recv_ack;
+        struct relay_status_msg *status_msg = &relay->status_msg;
+        /*
+         * Check that the vclock has been updated and the previous
+         * status message is delivered
+         */
+        if (status_msg->msg.route != NULL)
+            return;
+
+        struct vclock *send_vclock;
+        if (relay->version_id < version_id(1, 7, 4))
+            send_vclock = &relay->r->vclock;
+        else
+            send_vclock = &last_recv_ack->vclock;
+
+        /* Collect xlog files received by the replica. */
+        relay_schedule_pending_gc(relay, send_vclock);
+
+        /* Nothing to do */
+        double tx_idle = ev_monotonic_now(loop()) - relay->tx_seen_time;
+        if (vclock_sum(&status_msg->vclock) ==
+            vclock_sum(send_vclock) && tx_idle <= replication_timeout &&
+            status_msg->vclock_sync == last_recv_ack->vclock_sync)
+            return;
+        static const struct cmsg_hop route[] = {
+            {tx_status_update, NULL}
+        };
+        cmsg_init(&status_msg->msg, route);
+        vclock_copy_ignore0(&status_msg->vclock, send_vclock);
+        status_msg->txn_lag = relay->txn_lag;
+        status_msg->relay = relay;
+        status_msg->term = last_recv_ack->term;
+        status_msg->vclock_sync = last_recv_ack->vclock_sync;
+        cpipe_push(&relay->tx_pipe, &status_msg->msg);
     }
 
 Firstly, we wait for heartbeat packet from remote peer (the
 ``relay_reader_f`` will wake us up via ``relay->reader_cond``).
 Then we send our own heartbeat message if ``tx`` thread is
-responsive. And finally we send the last received vclock from the
-remote peer. Same time we notify xlog engine about WAL files we no
-longer need since they are propagated.
+responsive. And finally we send the last received vclock (and the
+vclock sync value) from the remote peer. Same time we notify xlog
+engine about WAL files we no longer need since they are propagated.
 
 Note that WAL commits runs ``relay_process_wal_event`` by
 self, still the event is delivered to main event loop and then
@@ -479,13 +481,15 @@ older messages as long as we deliver newer ones.
 
 .. code-block:: c
 
-    /* box/relay.cc */
+    /* src/box/relay.cc */
     struct relay {
         ...
         struct {
             ...
+            bool is_paired;
             struct relay_raft_msg raft_msgs[2];
             int raft_ready_msg;
+            bool is_raft_push_pending;
             bool is_raft_push_sent;
             ...
         } tx;
@@ -500,7 +504,7 @@ relay).
 
 .. code-block:: c
 
-     /* box/relay.cc */
+     /* src/box/relay.cc */
      void
      relay_push_raft(struct relay *relay, const struct raft_request *req)
      {
@@ -522,7 +526,10 @@ relay).
          relay->tx.is_raft_push_pending = true;
          relay_push_raft_msg(relay);
              /* relay_push_raft_msg() code */
-             if (!relay->tx.is_raft_enabled || relay->tx.is_raft_push_sent)
+             bool is_raft_enabled = relay->tx.is_paired &&
+                 !relay->replica->anon &&
+                 relay->version_id >= version_id(2, 6, 0);
+             if (!is_raft_enabled || relay->tx.is_raft_push_sent)
                 return;
              struct relay_raft_msg *msg =
                  &relay->tx.raft_msgs[relay->tx.raft_ready_msg];
@@ -536,31 +543,34 @@ Firstly, we choose the message, which is idling in tx thread and ready to
 save Raft requests. After that we update the request, not paying attention
 to the data saved in it. As soon as the route of the message (see `cbus`)
 is set, it's pushed to cpipe directed to the relay thread. The message can be
-pushed only if ``is_raft_enabled`` flag is set, which means ``tx_pipe`` and
-``relay_pipe`` have already been created. `is_raft_push_sent` shows whether
-any of the messages is en route between threads, so it must equal to false,
-as otherwise there will be no idle message to store incoming updates in tx.
+pushed only if ``is_raft_enabled`` is true. That is a locally computed
+condition (there is no such field anymore): the relay must be paired
+(``relay->tx.is_paired``), the replica must not be anonymous and its version
+must be at least 2.6.0. ``is_raft_push_pending`` means the message was saved
+but not sent yet, while `is_raft_push_sent` shows whether any of the messages
+is en route between threads, so it must equal to false, as otherwise there
+will be no idle message to store incoming updates in tx.
 
 As soon as msg is delivered to relay thread ``relay_raft_msg_push()``,
 which sends message to the remote peer via network (1st route), is executed:
 
 .. code-block:: c
 
-    /* box/relay.cc */
+    /* src/box/relay.cc */
     static void
     relay_raft_msg_push(struct cmsg *base)
     {
         struct relay_raft_msg *msg = (struct relay_raft_msg *)base;
+        struct relay *relay = msg->relay;
         struct xrow_header row;
+        RegionGuard region_guard(&fiber()->gc);
         xrow_encode_raft(&row, &fiber()->gc, &msg->req);
-        try {
-            /* Send via network */
-            relay_send(msg->relay, &row);
-            msg->relay->sent_raft_term = msg->req.term;
-        } catch (Exception *e) {
-            relay_set_error(msg->relay, e);
+        relay_send_raft(relay, &row);
+        if (relay_flush(relay) < 0) {
+            relay_set_error(relay, diag_last_error(diag_get()));
             fiber_cancel(fiber());
         }
+        relay->sent_raft_term = msg->req.term;
     }
 
 This function sends the message to the remote peer. After that the message is
@@ -572,7 +582,7 @@ relay thread:
 
 .. code-block:: c
 
-    /* box/relay.cc */
+    /* src/box/relay.cc */
     static void
     tx_raft_msg_return(struct cmsg *base)
     {
