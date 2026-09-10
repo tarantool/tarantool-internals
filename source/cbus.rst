@@ -20,7 +20,7 @@ following structure:
 
 .. code-block:: c
 
-    /* lib/core/cbus.c */
+    /* src/lib/core/cbus.c */
     struct cbus {
          /** cbus statistics */
          struct rmean *stats;
@@ -47,7 +47,7 @@ route. Endpoint has the following structure:
 
 .. code-block:: c
 
-    /* lib/core/cbus.h */
+    /* src/lib/core/cbus.h */
     struct cbus_endpoint {
         char name[FIBER_NAME_MAX];
         /** Member of cbus->endpoints */
@@ -70,14 +70,14 @@ Endpoint can be created via ``cbus_endpoint_create``:
 
 .. code-block:: c
 
-    /* lib/core/cbus.c */
+    /* src/lib/core/cbus.c */
     int
     cbus_endpoint_create(struct cbus_endpoint *endpoint, const char *name,
                          void (*fetch_cb)(...), void *fetch_data)
     {
         ...
         snprintf(endpoint->name, sizeof(endpoint->name), "%s", name);
-        endpoint->consumer = cord()->loop;
+        endpoint->consumer = loop();
         ...
         ev_async_init(&endpoint->async, fetch_cb);
         endpoint->async.data = fetch_data;
@@ -103,7 +103,7 @@ queue with incoming messages is empty:
 
 .. code-block:: c
 
-    /* lib/core/cbus.c */
+    /* src/lib/core/cbus.c */
     int
     cbus_endpoint_destroy(struct cbus_endpoint *endpoint,
                   void (*process_cb)(struct cbus_endpoint *endpoint))
@@ -134,7 +134,7 @@ It works as a message (event) producer and has the following structure:
 
 .. code-block:: c
 
-    /* lib/core/cbus.h */
+    /* src/lib/core/cbus.h */
     struct cpipe {
         /** Staging area for pushed messages */
         struct stailq input;
@@ -165,18 +165,24 @@ It can be created via ``cpipe_create``:
 
 .. code-block:: c
 
-    /* lib/core/cbus.c */
+    /* src/lib/core/cbus.c */
     void
     cpipe_create(struct cpipe *pipe, const char *consumer)
+    {
+        cpipe_create_noev(pipe, consumer);
+        pipe->producer = loop();
+        ev_async_init(&pipe->flush_input, cpipe_flush_cb);
+        pipe->flush_input.data = pipe;
+    }
+
+    void
+    cpipe_create_noev(struct cpipe *pipe, const char *consumer)
     {
         stailq_create(&pipe->input);
 
         pipe->n_input = 0;
         pipe->max_input = INT_MAX;
-        pipe->producer = cord()->loop;
-
-        ev_async_init(&pipe->flush_input, cpipe_flush_cb);
-        pipe->flush_input.data = pipe;
+        pipe->producer = NULL;
         rlist_create(&pipe->on_flush);
 
         tt_pthread_mutex_lock(&cbus.mutex);
@@ -193,24 +199,30 @@ It can be created via ``cpipe_create``:
 
 As we can see the function waits until the needed endpoint appears in ``cbus``
 registry. This is why we alerted all producers in ``cbus_endpoint_create``.
+The initialization and the wait are factored out into ``cpipe_create_noev``,
+which is also used for pipes without an event loop (``producer == NULL``);
+``cpipe_create`` additionally binds the pipe to the current loop.
 
 ``cpipe_flush_cb`` watcher is also registered here. It flushes messages
-from the ``pipe->input`` to the ``pipe->endpoint->output``. Note, that
-it is invoked not only once per loop iteration but also when ``max_input``
-is reached:
+from the ``pipe->input`` to the ``pipe->endpoint->output``. The watcher is
+fed once per loop iteration (when the first message is staged); when
+``max_input`` is reached, ``cpipe_push`` bypasses the watcher and calls
+``cpipe_flush`` directly:
 
 .. code-block:: c
 
-    /* lib/core/cbus.c */
+    /* src/lib/core/cbus.h */
     static inline void
-    cpipe_push_input(struct cpipe *pipe, struct cmsg *msg)
+    cpipe_push(struct cpipe *pipe, struct cmsg *msg)
     {
-        assert(loop() == pipe->producer);
+        assert(pipe->producer == NULL || pipe->producer == loop());
 
         stailq_add_tail_entry(&pipe->input, msg, fifo);
         pipe->n_input++;
         if (pipe->n_input >= pipe->max_input)
-            ev_invoke(pipe->producer, &pipe->flush_input, EV_CUSTOM);
+            cpipe_flush(pipe);
+        else if (pipe->n_input == 1 && pipe->producer != NULL)
+            ev_feed_event(pipe->producer, &pipe->flush_input, EV_CUSTOM);
     }
 
 
@@ -221,7 +233,7 @@ In order to enter the message processing loop ``cbus_loop`` can be used:
 
 .. code-block:: c
 
-    /* lib/core/cbus.c */
+    /* src/lib/core/cbus.c */
     void
     cbus_loop(struct cbus_endpoint *endpoint)
     {
@@ -235,6 +247,7 @@ In order to enter the message processing loop ``cbus_loop`` can be used:
                 stailq_foreach_entry_safe(msg, msg_next, &output, fifo)
                     cmsg_deliver(msg);
 
+            fiber_check_gc();
             if (fiber_is_cancelled())
                 break;
             fiber_yield();
@@ -248,7 +261,7 @@ Every message traveling between cords has the following structure:
 
 .. code-block:: c
 
-    /* lib/core/cbus.h */
+    /* src/lib/core/cbus.h */
     struct cmsg {
         /**
          * A member of the linked list - fifo of the pipe the
@@ -288,7 +301,7 @@ current hop and dispatch it to the next hop.
 
 .. code-block:: c
 
-    /* lib/core/cbus.c */
+    /* src/lib/core/cbus.c */
     void
     cmsg_deliver(struct cmsg *msg)
     {
