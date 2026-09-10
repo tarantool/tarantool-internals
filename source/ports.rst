@@ -70,12 +70,12 @@ on the stack.
 
 ..  code:: c
 
-    /* lib/core/port.h */
+    /* src/lib/core/port.h */
 
     struct port {
         const struct port_vtab *vtab;
 
-        char pad[68];
+        char pad[74];
     };
 
     struct port_vtab {
@@ -85,13 +85,16 @@ on the stack.
         int (*dump_msgpack_16)(struct port *port, struct obuf *out,
                                struct mp_ctx *ctx);
 
-        void (*dump_lua)(struct port *port, struct lua_State *L, bool is_flat);
+        void (*dump_lua)(struct port *port, struct lua_State *L,
+                         enum port_dump_lua_mode mode);
 
         const char *(*dump_plain)(struct port *port, uint32_t *size);
 
         const char *(*get_msgpack)(struct port *port, uint32_t *size);
 
         struct Mem *(*get_vdbemem)(struct port *port, uint32_t *size);
+
+        const struct port_c_entry *(*get_c_entries)(struct port *port);
 
         void (*destroy)(struct port *port);
     };
@@ -112,13 +115,19 @@ arguments of Lua stored procedures created with the `takes_raw_args` option.
 
 The `dump_lua` method facilitates pushing arguments to Lua stored procedures and
 retrieving results of different queries ("queries" here again in a generic
-sense).
+sense). Its `enum port_dump_lua_mode` argument selects the representation:
+item-by-item (`PORT_DUMP_LUA_MODE_FLAT`), a table (`PORT_DUMP_LUA_MODE_TABLE`)
+or a raw MsgPack object (`PORT_DUMP_LUA_MODE_MP_OBJECT`).
 
 The `dump_plain` method is used to push the port's content to a console
 session in a human-readable format like YAML.
 
-Finally, the `get_vdbemem` method allows transforming the port to a VDBE memory
+The `get_vdbemem` method allows transforming the port to a VDBE memory
 register for storing the result of a stored procedure call in SQL.
+
+Finally, the `get_c_entries` method returns the port content as a list of
+`port_c_entry` structures. It is used to process port contents from C and
+returns NULL for an empty port.
 
 Taxonomy of ports
 -----------------
@@ -197,19 +206,23 @@ arguments, namely, the MsgPack port and the Lua port.
 
 .. code:: c
 
-    /* box/call.c */
+    /* src/box/call.c */
 
     int
     box_process_call(struct call_request *request, struct port *port)
     {
         ...
+        struct mp_box_ctx ctx;
+        if (mp_box_ctx_create(&ctx, NULL, request->tuple_formats) != 0)
+            return -1;
         struct port args;
-	    port_msgpack_create(&args, request->args,
-                            request->args_end - request->args);
+        port_msgpack_create_with_ctx(&args, request->args,
+                                     request->args_end - request->args,
+                                     (struct mp_ctx *)&ctx);
         ...
     }
 
-    /* box/lua/lbox_func_call.c */
+    /* src/box/lua/lib.c */
 
     int
     lbox_func_call(struct lua_State *L)
@@ -230,7 +243,7 @@ the procedure call to a language specific handler.
 
 .. code:: c
 
-    /* box/func.c */
+    /* src/box/func.c */
 
     int
     func_call_no_access_check(struct func *base, struct port *args,
@@ -245,7 +258,7 @@ Finally, the argument port's contents are dumped to a language specific format.
 
 .. code:: C
 
-    /* box/module_cache.c */
+    /* src/box/module_cache.c */
 
     int
     module_func_call(struct module_func *mf, struct port *args,
@@ -257,36 +270,43 @@ Finally, the argument port's contents are dumped to a language specific format.
         ...
     }
 
-    /* box/lua/call.c */
+    /* src/box/lua/call.c */
 
     static inline void
     push_lua_args(lua_State *L, struct execute_lua_ctx *ctx)
     {
-        if (ctx->takes_raw_args) {
-            uint32_t size;
-            size_t region_svp = region_used(&fiber()->gc);
-            const char *data = port_get_msgpack(ctx->args, &size);
-            luamp_push(L, data, data + size);
-            region_truncate(&fiber()->gc, region_svp);
-        } else {
-            port_dump_lua(ctx->args, L, true);
-        }
+        port_dump_lua(ctx->args, L, ctx->takes_raw_args ?
+                                    PORT_DUMP_LUA_MODE_MP_OBJECT :
+                                    PORT_DUMP_LUA_MODE_FLAT);
     }
 
-    /* box/sql/func.c */
+    /* src/box/sql/func.c */
 
     int
     func_sql_expr_call(struct func *func, struct port *args, struct port *ret)
     {
         ...
-        if (args->vtab != &port_c_vtab || ((struct port_c *)args)->size != 2) {
+        if (args->vtab != &port_c_vtab) {
             diag_set(ClientError, ER_UNSUPPORTED, "Tarantool",
                  "SQL functions");
             return -1;
         }
-        struct port_c_entry *pe = ((struct port_c *)args)->first;
-        const char *data = pe->mp;
-        uint32_t mp_size = pe->mp_size;
-        struct tuple_format *format = pe->mp_format;
+        struct port_c *port = (struct port_c *)args;
+        char buf[32];
+        const char *data;
+        uint32_t mp_size;
+        struct tuple_format *format;
+        struct port_c_entry *pe = port->first;
+        if (pe->type != PORT_C_ENTRY_NULL) {
+            assert(pe->type == PORT_C_ENTRY_MP);
+            data = pe->mp.data;
+            mp_size = pe->mp.size;
+            format = pe->mp.format;
+        } else {
+            char *end = mp_encode_nil(buf);
+            data = buf;
+            mp_size = end - data;
+            format = NULL;
+        }
         ...
     }
