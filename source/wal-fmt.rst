@@ -20,19 +20,20 @@ Meta information block
 ----------------------
 
 The ``meta`` block ends up by ``\n\n`` marker. Each entry inside the block
-is ``\n`` separated records. The block is started with obligatory ``signature``,
+is ``\n`` separated records. The block is started with obligatory ``filetype``,
 ``version`` followed by ``key:value`` array.
 
  +-------------+
- |  signature  |
+ |  filetype   |
  +-------------+
  |  version    |
  +-------------+
  |  key: value |
  +-------------+
 
- The ``signature`` either ``XLOG`` for regular WAL files or ``SNAP`` for
- snapshots. For example an empty WAL file might look like
+ The ``filetype`` is either ``XLOG`` for regular WAL files or ``SNAP`` for
+ snapshots (vinyl files use ``VYLOG``, and vinyl runs ``RUN``/``INDEX``).
+ For example an empty WAL file might look like
 
  +-------------------------------------------------------+
  | ``XLOG\n``                                            |
@@ -78,13 +79,12 @@ The ``fixed header`` defined as
 
 .. code-block:: c
 
-    /* box/xlog.c */
+    /* src/box/xlog.c */
     struct xlog_fixheader {
         log_magic_t magic;
         uint32_t    crc32p;
         uint32_t    crc32c;
         uint32_t    len;
-        // padding to 19 bytes
     };
 
 ``magic`` is one of the following constants
@@ -97,8 +97,11 @@ The ``fixed header`` defined as
 | ``0xd510aded`` | end of file       |
 +----------------+-------------------+
 
-The ``xlog_fixheader`` should have length of 19 bytes on disk so right
-after the structure the padding is pushed. ``magic`` points how xrows
+The fixed header has a length of exactly 19 bytes on disk. Note that the
+serialized layout differs from the C structure above (which is only used for
+decoding): on disk it is ``magic`` (4 bytes), then MsgPack-encoded ``len``,
+``crc32p``, ``crc32c`` and finally a padding string, so that the total is
+always ``XLOG_FIXHEADER_SIZE`` (19) bytes. ``magic`` points how xrows
 are kept - either they are compressed (with zstd compression library)
 or not.
 
@@ -115,9 +118,10 @@ Header represented as
 
 .. code-block:: c
 
-    /* box/xrow.h */
+    /* src/box/xrow.h */
     struct xrow_header {
         uint32_t        type;
+        uint32_t        thread_id;
         uint32_t        replica_id;
         uint32_t        group_id;
         uint64_t        sync;
@@ -125,15 +129,29 @@ Header represented as
         double          tm;
         int64_t         tsn;
         uint64_t        stream_id;
-        uint8_t         flags;
+        union {
+            uint8_t         flags;
+            struct {
+                bool is_commit : 1;
+                bool wait_sync : 1;
+                bool wait_ack  : 1;
+            };
+        };
         int             bodycnt;
-        uint32_t        schema_version;
+        uint64_t        schema_version;
         struct iovec    body[XROW_BODY_IOVMAX];
+        const char     *header;
+        const char     *header_end;
     };
 
 Each ``xrow_header`` describes the ``body`` data, ie the requests to be
 executed (like insert, update and etc). Note that ``xlog_fixheader::len``
 may cover not one ``xrow_header`` but a series of headers and xrow requests.
+
+Note that ``schema_version`` is not stored in WAL rows: ``xrow_header_encode()``
+encodes only the request type, sync, replica id, group id, lsn, timestamp, tsn,
+stream id and flags. The decoder still accepts ``IPROTO_SCHEMA_VERSION`` for
+compatibility with older peers.
 
 Tarantool provides a ``tt`` tool, which can also be userd to show the content
 of files in a human readable form.
@@ -193,11 +211,14 @@ of files in a human readable form.
     ...
 
 
-Another example is more detailed example for same file
+Another, more detailed example is shown below. It was produced by the old
+``ttdump`` utility, which is no longer shipped with Tarantool. Note that the
+``schema_version`` field printed there is not actually stored in WAL headers
+(see above).
 
 .. code-block:: shell
 
-    $ /ttdump examples/00000000000000000008.snap
+    $ ttdump examples/00000000000000000008.snap
 
     meta: Instance            : 'd738afea-3764-4d12-9f41-eec2c7a36790'
     meta: VClock              : '{}'
