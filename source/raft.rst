@@ -1,23 +1,12 @@
-Qsync
-=====
+.. _raft:
 
-Introduction
-------------
+Raft
+====
 
-``Qsync`` stands for quorum-based synchronous replication. Synchronous
-transactions are not considered committed and are not responded to a
-client until they are replicated onto some number (can be configured
-with ``replication_synchro_quorum``) of replicas. Synchronous
-replication garantees strong data consistency and reliability.
-Tarantool uses Raft consensus algorithm for implementation of
-synchronous replication.
-
-Limitations of synchronous replication:
- - Master-slave topology: only one node can act as a master and make
-   synchronous transactions;
- - Quorum must be at least 50% of the cluster size + 1: using lower
-   value for quorum doesn't give any garantees of synchronous
-   replication and leads to unexpected problems, such as split-brain.
+Raft is the consensus algorithm used by Tarantool for synchronous
+replication. It elects a leader, tracks terms and votes, and controls who
+owns the synchronous transaction queue. The journal-replication mechanics
+built on top of Raft are described in :ref:`synchronous_replication`.
 
 How Raft works in general
 -------------------------
@@ -68,760 +57,6 @@ the following `habr article`_ and `here`_.
 Canonical design of Raft can be found in Raft `paper`_, extended version -
 in Diego's `dissertation`_. You can also check out the `article`_, which
 describes Raft and the specifics of its implementations.
-
-Synchronous replication of the journal
---------------------------------------
-
-The part of Raft consensus algorithm, which is responsible for journal
-replication, was implemented as separate task 3 months before the
-implementation of election process. So, let's start with describing its
-work first.
-
-.. note::
-   To refresh memory about network connections architecture lets
-   put some marks about ``applier`` and ``relay``.
-
-   When replication starts the replica's applier connects to the master node
-   where ``iproto`` thread accepts the connection and creates ``relay``
-   thread which monitors every new write to the local WAL via WAL watcher
-   and replies to the applier on the master node after processing the data.
-
-   Thus each ``applier`` has a corresponding ``relay`` on the remote node. These
-   two entities communicate via two separate sockets and each applier
-   and relay has a reader and a writer fibers. Also while each ``relay``
-   runs as a separate thread and appliers (not exactly one) run in seperate threads
-   (the number of threads is controlled by ``replication_threads`` option).
-
-   For details see :ref:`replication` and ':ref:`relay` internal docs.
-
-Since our WAL engine is **append only** two new records are added:
-``IPROTO_CONFIRM`` and ``IPROTO_ROLLBACK``. The first one means
-that replicas have successfully written a transaction and we can
-continue handling new ones. In turn rollback implies that a quorum
-has not been achieved and the transaction should be discarded.
-
-Limbo
-~~~~~
-
-Most important structure in ``qsync`` is ``limbo``, which is used to
-track synchronous transactions status. Transactions, which are not commited
-nor rolled back (it means that they are in progress of collecting ACKs)
-are stored here. It is defined as:
-
-.. code-block:: c
-
-    struct txn_limbo {
-        /**
-         * Queue of limbo entries. Ordered by LSN.
-         */
-        struct rlist queue;
-        /**
-         * Number of entries in limbo queue.
-         */
-        int64_t len;
-        /**
-         * Instance ID of the owner of all the transactions in the
-         * queue.
-         */
-        uint32_t owner_id;
-        /**
-         * Condition to wait for completion.
-         */
-        struct fiber_cond wait_cond;
-        /**
-         * All components of the vclock are versions of the limbo
-         * owner's LSN, how it is visible on other nodes.
-         */
-        struct vclock vclock;
-        /**
-         * Latest terms received with PROMOTE entries from remote instances.
-         * Limbo uses them to filter out the transactions coming not from the
-         * limbo owner.
-         */
-        struct vclock promote_term_map;
-        /**
-         * The biggest PROMOTE term seen by the instance and persisted in WAL.
-         */
-        uint64_t promote_greatest_term;
-        /**
-         * To order access to the promote data.
-         */
-        struct latch promote_latch;
-        /**
-         * Maximal LSN gathered quorum and either already confirmed in WAL, or
-         * whose confirmation is in progress right now.
-         */
-        int64_t confirmed_lsn;
-        /**
-         * Total number of performed rollbacks. It used as a guard
-         * to do some actions assuming all limbo transactions will
-         * be confirmed, and to check that there were no rollbacks
-         * in the end.
-         */
-        int64_t rollback_count;
-        /**
-         * Whether the limbo is in rollback mode.
-         */
-        bool is_in_rollback;
-        /**
-         * Savepoint of confirmed LSN. To rollback to in case the current
-         * synchro command (promote/demote/...) fails.
-         */
-        int64_t svp_confirmed_lsn;
-        union {
-            /**
-             * Whether the limbo is frozen. This mode prevents CONFIRMs and
-             * ROLLBACKs being written by this instance.
-             */
-            uint8_t frozen_reasons;
-            struct {
-                /*
-                 * This mode is turned on when quorum is lost if this
-                 * instance is the current RAFT leader and fencing is
-                 * enabled. Instance leaves this mode when it becomes
-                 * leader again or PROMOTE/DEMOTE arrives from some
-                 * remote instance.
-                 */
-                bool is_frozen_due_to_fencing : 1;
-                /*
-                 * This mode is always on upon node start and is turned
-                 * off by any new PROMOTE arriving either via
-                 * replication or issued by the node.
-                 */
-                bool is_frozen_until_promotion : 1;
-            };
-        };
-        /**
-         * Whether this instance validates incoming synchro requests. When the
-         * setting is on, the instance only allows CONFIRM/ROLLBACK from the
-         * limbo owner, tracks PROMOTE/DEMOTE term and owner_id consistency.
-         * The filtering is turned off during bootstrap.
-         */
-        bool do_validate;
-    };
-
-
-Master initiates transaction
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Let's consider the case where a transaction is initiated on a master
-node and replicated to the single replica. Before entering limbo the record
-goes via:
-
-.. code-block:: c
-
-    txn_commit
-        txn_journal_entry_new
-
-The ``txn_journal_entry_new`` traverse the rows in the record and
-if there is a synchronous space modified then we do
-
-.. code-block:: c
-
-    txn_journal_entry_new
-        ...
-        if (is_sync) {
-            txn_set_flags(txn, TXN_WAIT_SYNC | TXN_WAIT_ACK);
-        } else if (!txn_limbo_is_empty(&txn_limbo)) {
-            txn_set_flags(txn, TXN_WAIT_SYNC);
-        }
-
-So we mark the transaction with ``TXN_WAIT_SYNC | TXN_WAIT_ACK``
-flags, ie the transaction should wait until previous transactions
-are complete and receive ACKs from a quorum.
-
-Note that if the transaction is asynchronous but the limbo queue is
-not empty, it means that there are some previous uncommitted synchronous
-transactions on the fly, and this asynchronous transaction should wait
-for previous synchronous transactions to complete first, thus we mark
-such transaction as ``TXN_WAIT_SYNC``.
-
-Then we add the transaction to the limbo:
-
-.. code-block:: c
-
-    txn_commit
-        req = txn_journal_entry_new(txn);
-        ...
-        if (txn_has_flag(txn, TXN_WAIT_SYNC) &&
-            txn_add_limbo_entry(txn, req) != 0) {
-            goto rollback_abort;
-        }
-
-.. code-block:: c
-
-    txn_add_limbo_entry
-        uint32_t origin_id = req->rows[0]->replica_id;
-        txn->limbo_entry = txn_limbo_append(&txn_limbo, origin_id, txn);
-
-The ``txn_limbo_append`` allocates a new limbo entry which is defined as
-
-.. code-block:: c
-
-    struct txn_limbo_entry {
-        /** Link for limbo's queue. */
-        struct rlist in_queue;
-        /** Transaction, waiting for a quorum. */
-        struct txn *txn;
-        /**
-         * LSN of the transaction by the originator's vclock
-         * component. May be -1 in case the transaction is not
-         * written to WAL yet.
-         */
-        int64_t lsn;
-        /**
-         * How many replicas confirmed receipt of the transaction.
-         */
-        int ack_count;
-        /**
-         * Result flags. Only one of them can be true. But both
-         * can be false if the transaction is still waiting for
-         * its resolution.
-         */
-        bool is_commit;
-        bool is_rollback;
-    };
-
-Then this limbo entry is appended to the ``txn_limbo::queue`` list.
-It is very important that entries are appended to the list, which
-allows to determinate aging of entries.
-
-Once limbo entry is allocated and queued we write the transaction
-to the storage device:
-
-.. code-block:: c
-
-    txn_commit
-        req = txn_journal_entry_new(txn);
-        ...
-        if (txn_has_flag(txn, TXN_WAIT_SYNC) &&
-            txn_add_limbo_entry(txn, req) != 0) {
-            goto rollback_abort;
-        }
-        ...
-        if (journal_write(req) != 0)
-            goto rollback_io;
-
-The write is synchronous here, so we are waiting for it to be complete (in
-case of an error we simply drop this entry from the limbo).
-
-An interesting moment is that when WAL thread finishes writing it notifies
-WAL watcher (that is, the relay thread) that new data has been appended to the journal.
-The relay watcher performs ``recover_remaining_wals`` and sends new data
-to the replica.
-
-Replica receives transaction
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Processing remote transactions goes via ``applier`` module. So let's assume
-we obtain a new synchronous record from the master node above and master
-WAL thread finished write procedure but we have not yet returned from
-``journal_write`` in terms of fiber switching.
-
-Decoding incoming replication stream is done in seperate thread in applier
-with ``applier_thread_reader_f`` function, which pushes decoded messages
-to tx. Tx thread on its side applies them with ``applier_process_batch`` function:
-
-.. code-block:: c
-
-    applier_process_batch:
-        ...
-        applier_apply_tx
-            ...
-            if (unlikely(iproto_type_is_synchro_request(first_row->type))) {
-                rc = apply_synchro_req(applier->instance_id, &txr->row, &txr->req.synchro);
-                    ...
-                    journal_entry_create(&entry.base, 1, xrow_approx_len(row),
-                                         apply_synchro_req_cb, &entry);
-                    ...
-                    txn_limbo_begin(&txn_limbo);
-                    if (txn_limbo_req_prepare(&txn_limbo, req) < 0)
-                        goto err;
-                    if (journal_write(&entry.base) != 0) {
-                        txn_limbo_req_rollback(&txn_limbo, req);
-                        goto err;
-                    }
-                    if (entry.base.res < 0) {
-                        diag_set_journal_res(entry.base.res);
-                        goto err;
-                    }
-
-                    txn_limbo_commit(&txn_limbo);
-            } else {
-                rc = apply_plain_tx(applier->instance_id, rows,
-                    replication_skip_conflict, true);
-            }
-
-The ``journal_write`` writes data to the storage device in synchronous way.
-When write finishes, ``txn_on_journal_write`` is called, which assigns
-``lsn`` from the master node to the limbo entry:
-
-.. code-block:: c
-
-    txn_on_journal_write
-        ...
-        if (!txn_has_flag(txn, TXN_WAIT_SYNC)) {
-            txn_complete_success(txn);
-        } else {
-            int64_t lsn;
-            ...
-            txn_limbo_assign_lsn(&txn_limbo, txn->limbo_entry, lsn);
-        }
-
-``apply_synchro_req`` adds a callback ``apply_synchro_req_cb``, which runs
-``applier_on_wal_write``:
-
-.. code-block:: c
-
-    static int
-    applier_on_wal_write(struct trigger *trigger, void *event)
-    {
-        struct applier *applier = (struct applier *)trigger->data;
-        applier_signal_ack(applier);
-        applier_check_sync(applier);
-        return 0;
-    }
-
-This cause ``applier_writer_f`` fiber, which runs in the applier thread,
-to write ACK message to the master's relay reader.
-
-Master WAL write of the transaction data can complete with any speed in any
-order with the ACKs receipt. So, we assume that all of this happens before
-the master node wakes up from its own write operation.
-
-Master receives ACK
-~~~~~~~~~~~~~~~~~~~
-
-The master's node relay reader ``relay_reader_f`` receives ACK message
-which is basically LSN of the data been written. Thus the data has been
-just written on the replica.
-
-.. code-block:: c
-
-    int
-    relay_reader_f(va_list ap)
-    {
-        ...
-        xrow_decode_applier_heartbeat
-            ...
-            xrow_decode_vclock_xc(&xrow, &relay->recv_vclock);
-        ...
-    }
-
-Then main relay fiber detects that replica has received the data.
-
-.. code-block:: c
-
-    static int
-    relay_subscribe_f(va_list ap)
-    {
-        while (!fiber_is_cancelled()) {
-            ...
-            relay_check_status_needs_update
-                ...
-                send_vclock = &relay->recv_vclock;
-                ...
-                if (vclock_sum(&relay->status_msg.vclock) ==
-                    vclock_sum(send_vclock))
-                    continue;
-
-                static const struct cmsg_hop route[] = {
-                    {tx_status_update, NULL}
-                }
-                cmsg_init(&relay->status_msg.msg, route);
-                vclock_copy(&relay->status_msg.vclock, send_vclock);
-                ...
-                cpipe_push(&relay->tx_pipe, &relay->status_msg.msg);
-    }
-
-This causes ``tx_status_update`` to run in the context of ``tx`` thread,
-remember the relay runs in a separate thread. The ``tx_status_update`` tries
-to update limbo status
-
-.. code-block:: c
-
-    static void
-    tx_status_update(struct cmsg *msg)
-    {
-        ...
-        if (txn_limbo.owner_id == instance_id) {
-            txn_limbo_ack(&txn_limbo, ack.source,
-                          vclock_get(ack.vclock, instance_id));
-        }
-        ...
-    }
-
-Here is a very interesting moment: the purpose of ``txn_limbo_ack`` is to
-gather ACKs on synchronous replication to obtain quorum.
-
-.. code-block:: c
-
-    void
-    txn_limbo_ack(struct txn_limbo *limbo, uint32_t replica_id, int64_t lsn)
-    {
-        /* Nothing to ACK */
-        if (rlist_empty(&limbo->queue))
-            return;
-
-        if (txn_limbo_is_frozen(limbo))
-            return;
-
-        /* Ignore if we're rolling back already */
-        if (limbo->is_in_rollback)
-            return;
-
-        int64_t prev_lsn = vclock_get(&limbo->vclock, replica_id);
-        if (lsn == prev_lsn)
-            return;
-
-        /* Mark ACK'ed lsn */
-        vclock_follow(&limbo->vclock, replica_id, lsn);
-
-        struct txn_limbo_entry *e;
-        int64_t confirm_lsn = -1;
-
-        rlist_foreach_entry(e, &limbo->queue, in_queue) {
-            if (e->lsn > lsn)
-                break;
-            if (!txn_has_flag(e->txn, TXN_WAIT_ACK)) {
-                continue;
-            } else if (e->lsn <= prev_lsn) {
-                continue;
-            } else if (++e->ack_count < replication_synchro_quorum) {
-                continue;
-            } else {
-                confirm_lsn = e->lsn;
-            }
-        }
-
-        if (confirm_lsn == -1 || confirm_lsn <= limbo->confirmed_lsn)
-            return;
-
-        txn_limbo_write_confirm(limbo, confirm_lsn);
-        txn_limbo_read_confirm(limbo, confirm_lsn);
-    }
-
-The key moment for our scenario is setting the LSN from replica in
-``limbo->vclock``, then since LSN on entry has not yet been assigned we
-exit early.
-
-Master finishes write
-~~~~~~~~~~~~~~~~~~~~~
-
-Now let's continue. Assume that we've finally been woken up from the
-``journal_write`` and entry is in limbo with ``lsn = -1``. When write finishes,
-``txn_on_journal_write`` is called:
-
-.. code-block:: c
-
-    txn_on_journal_write(struct journal_entry *entry)
-        ...
-        txn_limbo_assign_lsn(&txn_limbo, txn->limbo_entry, lsn);
-            if (limbo->owner_id == instance_id)
-                txn_limbo_assign_local_lsn(limbo, entry, lsn);
-            else
-                txn_limbo_assign_remote_lsn(limbo, entry, lsn);
-
-First, we fetch LSN assigned by WAL engine and call ``txn_limbo_assign_local_lsn``,
-which not only assigns the entry but also collects the number of ACKs obtained.
-
-.. code-block:: c
-
-    void
-    txn_limbo_assign_local_lsn(struct txn_limbo *limbo,
-                               struct txn_limbo_entry *entry,
-                               int64_t lsn)
-    {
-        /* WAL provided us this number */
-        entry->lsn = lsn;
-    
-        struct vclock_iterator iter;
-        vclock_iterator_init(&iter, &limbo->vclock);
-
-        /*
-         * In case if relay is faster than tx the ACK
-         * may have came already from remote node and
-         * our relay set LSN here so lets account it.
-         */
-        int ack_count = 0;
-        vclock_foreach(&iter, vc)
-            ack_count += vc.lsn >= lsn;
-    
-        entry->ack_count = ack_count;
-    }
-
-In our case the relay has been updating ``limbo->vclock`` before we exit WAL
-write routine so the replica already wrote this new data to an own WAL and
-now we can detect this situation by reading replica ACK from ``entry->ack_count``.
-
-Then we call ``txn_limbo_ack`` by ourselves (because we wrote the data to the
-own WAL and can ACK it), but this time entry has LSN assigned so we walk
-over the limbo queue and this time we reach the quorum so that ``confirm_lsn``
-points to our entry.
-
-In our scenario we have only one master and one slave node so we just reached the
-replication quorum thus we need to inform all nodes that the quorum is collected
-and we are safe to proceed.
-
-For this sake we call ``txn_limbo_write_confirm`` which writes ``IPROTO_CONFIRM``
-record to our WAL, this record consists of ``confirmed_lsn``.
-
-.. code-block:: c
-
-    int
-    txn_commit(struct txn *txn)
-    {
-        ...
-        if (txn_has_flag(txn, TXN_WAIT_SYNC)) {
-            if (txn_has_flag(txn, TXN_WAIT_ACK)) {
-                txn_limbo_ack(&txn_limbo, txn_limbo.owner_id, lsn);
-                    ...
-                    txn_limbo_write_confirm(limbo, confirm_lsn);
-                        ...
-                        limbo->confirmed_lsn = lsn;
-                        txn_limbo_write_synchro(limbo, IPROTO_CONFIRM, lsn);
-                        txn_limbo_read_confirm(limbo, confirm_lsn);
-            }
-
-The write is synchronous so we wait until it completes. Once written it propagated
-to the replica via ``master relay -> replica applier`` socket. When replica
-receives this packet it calls ``apply_synchro_req`` which writes this packet to
-the replica WAL. Note that here we can reach the same scenario as for a regular
-write -- the master relay receives ACK from replica's ``IPROTO_CONFIRM`` write
-but entry's LSN gonna be less than LSN of ``IPROTO_CONFIRM`` record so we won't
-do anything.
-
-Then master runs ``txn_limbo_read_confirm``.
-
-.. code-block:: c
-
-    static void
-    txn_limbo_read_confirm(struct txn_limbo *limbo, int64_t lsn)
-    {
-        struct txn_limbo_entry *e, *tmp;
-
-        rlist_foreach_entry_safe(e, &limbo->queue, in_queue, tmp) {
-            if (txn_has_flag(e->txn, TXN_WAIT_ACK)) {
-                if (e->lsn > lsn)
-                    break;
-                if (e->lsn == -1)
-                    break;
-            } else if (e->txn->signature == TXN_SIGNATURE_UNKNOWN) {
-                ...
-            }
-
-            e->is_commit = true;
-            e->txn->limbo_entry = NULL;
-            txn_limbo_remove(limbo, e);
-            txn_clear_flags(e->txn, TXN_WAIT_SYNC | TXN_WAIT_ACK);
-
-            txn_complete_success(e->txn);
-        }
-    }
-
-Here we traverse the queue and mark the entry as committed and discard
-it from the queue.
-
-Finally, the master node exits from ``txn_limbo_ack`` and calls
-``txn_limbo_wait_complete``:
-
-.. code-block:: c
-
-    int
-    txn_commit(struct txn *txn)
-    {
-        ...
-        if (txn_has_flag(txn, TXN_WAIT_SYNC)) {
-            if (txn_has_flag(txn, TXN_WAIT_ACK)) {
-                txn_limbo_ack(&txn_limbo, txn_limbo.owner_id, lsn);
-            }
-            if (txn_limbo_wait_complete(&txn_limbo, limbo_entry) < 0)
-                goto rollback;
-        }
-
-In our scenario the relay and replica were so fast that
-``txn_limbo_read_confirm`` already collected the quorum and finished
-processing of synchronous replication but this is not always happen this way.
-
-In turn the replica may do the reverse and due to various reasons
-(for example network lag) and decelerate the processing. Thus
-the master node gonna wait until replica processes the data.
-
-And for this case ``txn_limbo_wait_complete`` tries its best.
-Let's consider this early write case below.
-
-Master write finished early
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-We assume the WAL wrote the data and entry in limbo is assigned with a
-proper LSN number. Relay has sent this new data to the salve's node
-applier already.
-
-.. code-block:: c
-
-    int
-    txn_limbo_wait_complete(struct txn_limbo *limbo, struct txn_limbo_entry *entry)
-    {
-        /*
-         * Replicas already confirmed this entry and
-         * CONFIRM is written in our wal.
-         */
-        if (txn_limbo_entry_is_complete(entry))
-            goto complete;
-        
-        double start_time = fiber_clock();
-        while (true) {
-            double deadline = start_time + replication_synchro_timeout;
-            double timeout = deadline - fiber_clock();
-
-            int rc = fiber_cond_wait_timeout(&limbo->wait_cond, timeout);
-
-            if (txn_limbo_is_frozen(limbo))
-                goto wait;
-
-            /*
-             * It get confirmed by all replicas via relay.
-             */
-            if (txn_limbo_entry_is_complete(entry))
-                goto complete;
-
-            if (rc != 0)
-                break;
-        }
-    
-        if (txn_limbo_first_entry(limbo) != entry)
-            goto wait;
-    
-        if (entry->lsn <= limbo->confirmed_lsn)
-            goto wait;
-    
-        txn_limbo_write_rollback(limbo, entry->lsn);
-
-        struct txn_limbo_entry *e, *tmp;
-        rlist_foreach_entry_safe_reverse(e, &limbo->queue, in_queue, tmp) {
-            e->txn->signature = TXN_SIGNATURE_QUORUM_TIMEOUT;
-            txn_limbo_abort(limbo, e);
-            txn_clear_flags(e->txn, TXN_WAIT_SYNC | TXN_WAIT_ACK);
-            txn_complete_fail(e->txn);
-            if (e == entry)
-                break;
-            fiber_wakeup(e->txn->fiber);
-        }
-        diag_set(ClientError, ER_SYNC_QUORUM_TIMEOUT);
-        return -1;
-    
-    wait:
-        do {
-            fiber_yield();
-        } while (!txn_limbo_entry_is_complete(entry));
-    
-    complete:
-        if (entry->is_rollback) {
-            diag_set(ClientError, ER_SYNC_ROLLBACK);
-            return -1;
-        }
-        return 0;
-    }
-
-First, we check for the previous scenario where the relay has already replied
-that the replica received and confirmed the data. But we're interested
-in the next case where the replica didn't process the new data yet.
-
-So we start waiting for a configurable timeout. This puts us to a wait
-cycle where other fibers and threads continue working.
-In particular, while we're in ``fiber_cond_wait_timeout``,
-the replica obtains new data, writes it to its own WAL,
-then our master's relay acquires ratification, and then runs
-``tx_status_update`` and ``txn_limbo_ack``, which in turn initiate already
-known ``txn_limbo_write_confirm`` and ``txn_limbo_read_confirm`` calls sequence.
-The ``IPROTO_CONFIRM`` get written on the master node and propagated to the
-replica node then.
-
-Rollback
-~~~~~~~~
-
-However, if timeout passes and the limbo entry is still not complete,
-``txn_limbo_write_rollback`` is called:
-
-.. code-block:: c
-
-    static void
-    txn_limbo_write_rollback(struct txn_limbo *limbo, int64_t lsn)
-    {
-        assert(lsn > limbo->confirmed_lsn);
-        assert(!limbo->is_in_rollback);
-        limbo->is_in_rollback = true;
-        txn_limbo_write_synchro(limbo, IPROTO_RAFT_ROLLBACK, lsn, 0);
-        limbo->is_in_rollback = false;
-    }
-
-It writes a rollback message to WAL. After it's written all the transactions
-following the current one and waiting for confirmation will be rolled back.
-
-Wal stream is processed by ``wal_stream_apply_row`` function. As we write
-synchronously, ``wal_stream_apply_synchro_row``` is called:
-
-.. code-block:: c
-
-    static void
-    wal_stream_create(struct wal_stream *ctx)
-    {
-        xstream_create(&ctx->base, wal_stream_apply_row,
-                   wal_stream_schedule_yield);
-        ctx->tsn = 0;
-        ctx->first_row_lsn = 0;
-        ctx->has_yield = false;
-        ctx->has_global_row = false;
-    }
-
-.. code-block:: c
-
-    static void
-    wal_stream_apply_row(struct xstream *base, struct xrow_header *row)
-    {
-        struct wal_stream *stream =
-            container_of(base, struct wal_stream, base);
-        if (iproto_type_is_synchro_request(row->type)) {
-            if (wal_stream_apply_synchro_row(stream, row) != 0)
-                ...
-                return txn_limbo_process(&txn_limbo, &syn_req);
-
-``txn_limbo_process`` function processes a synchronous replication request and
-initiates reading confirm, rollback, promote or demote:
-
-.. code-block:: c
-
-    void
-    txn_limbo_req_commit(struct txn_limbo *limbo, const struct synchro_request *req)
-    {
-        ...
-        int64_t lsn = req->lsn;
-        switch (req->type) {
-        case IPROTO_RAFT_CONFIRM:
-            txn_limbo_read_confirm(limbo, lsn);
-            break;
-        case IPROTO_RAFT_ROLLBACK:
-            txn_limbo_read_rollback(limbo, lsn);
-                ...
-                rlist_foreach_entry_safe_reverse(e, &limbo->queue, in_queue, tmp) {
-                    txn_limbo_abort(limbo, e);
-                }
-                ...
-            break;
-        case IPROTO_RAFT_PROMOTE:
-            txn_limbo_read_promote(limbo, req->origin_id, req->replica_id,
-                           lsn);
-            break;
-        case IPROTO_RAFT_DEMOTE:
-            txn_limbo_read_demote(limbo, req->replica_id, lsn);
-            break;
-        default:
-            unreachable();
-        }
-        return;
-    }
-
-``txn_limbo_abort`` deletes transaction from the limbo queue.
 
 Implementation of election process
 ----------------------------------
@@ -946,15 +181,18 @@ When Tarantool starts, ```box_raft_init`` is called:
                      .broadcast = box_raft_broadcast,
                      .write = box_raft_write,
                      .schedule_async = box_raft_schedule_async,
+                     .node_to_string = box_raft_node_to_string,
                  };
                  raft_create(&box_raft_global, &box_raft_vtab);
                  trigger_create(&box_raft_on_update, box_raft_on_update_f, NULL, NULL);
                  raft_on_update(box_raft(), &box_raft_on_update);
 
-                 trigger_create(&box_raft_on_quorum_gain, box_raft_on_quorum_change_f,
+                 trigger_create(&box_raft_on_quorum_change, box_raft_on_quorum_change_f,
                             NULL, NULL);
-                 trigger_create(&box_raft_on_quorum_loss, box_raft_on_quorum_change_f,
-                            NULL, NULL);
+                 box_register_watcher("box.wal_error", ...,
+                            box_raft_on_wal_error_f, ...);
+                 box_raft_on_election_event =
+                            event_get("box.ctl.on_election", true);
 
 Note, that box.cfg has not been called yet, initialization process takes place right now.
 ``box_raft_init`` invokes ``raft_create`` (we'll take a look at its work below), which
@@ -970,8 +208,12 @@ visible attributes are changed (in ``raft_schedule_broadcast``):
         struct raft *raft = (struct raft *)event;
         box_update_ro_summary();
         box_broadcast_election();
-        if (raft->volatile_term > txn_limbo.promote_greatest_term)
-            txn_limbo_fence(&txn_limbo);
+        /*
+         * Once the node becomes read-only due to a new term, it should
+         * stop finalizing existing synchronous transactions so that it
+         * doesn't trigger split-brain with the new leader.
+         */
+        txn_limbo_update_state(&txn_limbo);
         if (raft->state != RAFT_STATE_LEADER)
             return 0;
         box_raft_schedule_async(raft);
@@ -1044,25 +286,16 @@ processing async work:
             box_raft_has_work = false;
 
             raft_process_async(raft);
-                bool is_idle;
-                do {
-                    is_idle = true;
-                    if (raft->is_write_in_progress) {
-                        raft_worker_handle_io(raft);
-                        is_idle = false;
-                    }
-                    if (raft->is_broadcast_scheduled) {
-                        raft_worker_handle_broadcast(raft);
-                        is_idle = false;
-                    }
-                } while (!is_idle);
-
             box_raft_update_synchro_queue(raft);
+
             if (!box_raft_has_work)
                 fiber_yield();
         }
         return 0;
     }
+
+The WAL write and broadcast scheduling are now handled inside
+``raft_process_async`` (``src/lib/raft/raft.c``).
 
 We consider initialization done, ``election_mode`` is set to OFF now via
 ``box_raft_cfg_election_mode``:
@@ -1084,23 +317,26 @@ We consider initialization done, ``election_mode`` is set to OFF now via
             break;
         case ELECTION_MODE_MANUAL:
             box_raft_add_quorum_triggers();
-            if (raft->state == RAFT_STATE_LEADER ||
-                raft->state == RAFT_STATE_CANDIDATE) {
-                raft_cfg_is_candidate_later(raft, false);
-            } else {
-                raft_cfg_is_candidate(raft, false);
-            }
+            /*
+             * If the node already was the leader, don't disrupt its
+             * current leadership. It doesn't contradict the manual mode.
+             */
+            raft_cfg_is_candidate_later(raft, false);
             break;
         case ELECTION_MODE_CANDIDATE:
             box_raft_add_quorum_triggers();
-            if (replicaset_has_healthy_quorum())
+            if (box_raft_has_healthy_quorum())
                 raft_cfg_is_candidate(raft, true);
             break;
         default:
             unreachable();
         }
-        raft_cfg_is_enabled(raft, mode != ELECTION_MODE_OFF);
+        box_raft_update_election_quorum();
+        txn_limbo_update_state(&txn_limbo);
     }
+
+Raft is enabled/disabled separately: ``raft_cfg_is_enabled(box_raft(), true)``
+is called from ``box_raft_finish_recovery()`` once recovery is over.
 
 After the execution of this function we'll have ``is_enabled = false`` and
 ``is_candidate = false``. Even though Raft is disabled, we still can accept Raft messages
@@ -1587,14 +823,23 @@ Now we broadcast the message to the local node and to our followers. On
     box_update_ro_summary(void)
     {
         bool old_is_ro_summary = is_ro_summary;
-        is_ro_summary = is_ro || is_orphan || raft_is_ro(box_raft()) ||
-                txn_limbo_is_ro(&txn_limbo);
+        is_ro_summary = is_ro || is_orphan || is_waiting_for_own_rows ||
+                box_raft_is_ro();
         /* In 99% nothing changes. Filter this out first. */
         if (is_ro_summary == old_is_ro_summary)
             return;
-
-        if (is_ro_summary)
-            engine_switch_to_ro();
+        if (is_ro_summary) {
+            struct txn *txn;
+            rlist_foreach_entry(txn, &txns, in_txns) {
+                if (txn->n_new_rows != 0 &&
+                    txn->n_new_rows != txn->n_local_rows &&
+                    txn->status == TXN_INPROGRESS) {
+                    txn_abort_with_conflict(txn);
+                    txn_set_flags(txn, TXN_IS_ABORTED_RO_NODE);
+                }
+            }
+            say_info("box switched to read-only - %s", box_ro_state_msg());
+        }
         fiber_cond_broadcast(&ro_cond);
         box_broadcast_status();
         box_broadcast_election();
@@ -1717,26 +962,25 @@ Manual promotion is done using the function ``box_promote``, which calls
     int
     box_promote(void)
     {
-        ...
-        if (is_leader)
+        if (!is_box_configured)
             return 0;
-        switch (box_election_mode) {
-        ...
-        case ELECTION_MODE_MANUAL:
-        case ELECTION_MODE_CANDIDATE:
-            if (raft->state == RAFT_STATE_LEADER)
-                return 0;
-            is_in_box_promote = false;
-            return box_raft_try_promote();
-        default:
-            unreachable();
-        }
-
-        int64_t wait_lsn = box_wait_limbo_acked(replication_synchro_timeout);
-        if (wait_lsn < 0)
+        if (box_check_promote() != 0)
             return -1;
-
-        return box_issue_promote(wait_lsn);
+        struct raft *raft = box_raft();
+        if (box_election_mode == ELECTION_MODE_VOTER) {
+            diag_set(ClientError, ER_UNSUPPORTED, "election_mode='voter'",
+                     "manual elections");
+            return -1;
+        }
+        /*
+         * Currently active leader (the instance that is seen as leader by
+         * both raft and txn_limbo) can't issue another PROMOTE.
+         */
+        if (txn_limbo.state == TXN_LIMBO_STATE_LEADER)
+            return 0;
+        if (box_raft_try_promote() != 0)
+            return -1;
+        return box_wait_for_rw_while_leader(raft);
     }
 
 When the current node becomes leader, its worker writes promote:
@@ -1747,11 +991,14 @@ When the current node becomes leader, its worker writes promote:
     {
         ...
         while (!fiber_is_cancelled()) {
+            raft_process_async(raft);
             box_raft_update_synchro_queue(raft);
                 ...
                 rc = box_promote_qsync();
                     ...
-                    return box_issue_promote(wait_lsn);
+                    return txn_limbo_promote(&txn_limbo,
+                                             IPROTO_RAFT_PROMOTE,
+                                             TIMEOUT_INFINITY);
             ...
         }
         return 0;
@@ -1759,12 +1006,10 @@ When the current node becomes leader, its worker writes promote:
 
 .. code-block:: c
 
+    int
     box_raft_try_promote(void)
     {
-        struct raft *raft = box_raft();
-        raft_promote(raft);
-
-        struct trigger trig;
+        ...
         struct box_raft_watch_ctx ctx = {
             .is_done = false,
             .term = raft->volatile_term,
@@ -1772,20 +1017,11 @@ When the current node becomes leader, its worker writes promote:
         };
         trigger_create(&trig, box_raft_try_promote_f, &ctx, NULL);
         raft_on_update(raft, &trig);
-        while (!fiber_is_cancelled() && !ctx.is_done)
-            fiber_yield();
-        trigger_clear(&trig);
-
+        ...
         if (raft->state == RAFT_STATE_LEADER)
             return 0;
-
-        int connected = replicaset.healthy_count;
-        int quorum = replicaset_healthy_quorum();
-        if (!ctx.is_done) {
-            diag_set(FiberIsCancelled);
-            }
-            ...
         raft_restore(raft);
+        ...
         return -1;
     }
 
@@ -1814,23 +1050,42 @@ When the user do ``box.ctl.demote()``,
     int
     box_demote(void)
     {
-        ...
-        bool is_leader = txn_limbo_replica_term(&txn_limbo, instance_id) ==
-                 box_raft()->term && txn_limbo.owner_id == instance_id;
-        if (box_election_mode != ELECTION_MODE_OFF)
-            is_leader = is_leader && box_raft()->state == RAFT_STATE_LEADER;
-        if (!is_leader)
+        if (!is_box_configured)
             return 0;
-        if (box_trigger_elections() != 0)
+        if (box_check_promote() != 0)
             return -1;
-        if (box_election_mode != ELECTION_MODE_OFF)
+        is_in_box_promote = true;
+        auto promote_guard = make_scoped_guard([&] {
+            is_in_box_promote = false;
+        });
+        if (box_election_mode != ELECTION_MODE_OFF) {
+            box_raft_leader_step_off();
             return 0;
-        if (box_try_wait_confirm(2 * replication_synchro_timeout) < 0)
+        }
+        if (txn_limbo.state == TXN_LIMBO_STATE_INACTIVE)
+            return 0;
+        /*
+         * If Raft term went further than the limbo, it might indicate
+         * ongoing elections. Only allow persistent demotion when this
+         * instance actually owns the limbo in the latest known Raft term.
+         */
+        struct raft *raft = box_raft();
+        uint64_t limbo_term = txn_limbo.term;
+        if (limbo_term < raft->volatile_term ||
+            txn_limbo.queue.owner_id != instance_id) {
+            diag_set(ClientError, ER_NOT_LEADER, raft->leader);
             return -1;
-        int64_t wait_lsn = box_wait_limbo_acked(replication_synchro_timeout);
-        if (wait_lsn < 0)
+        }
+        raft_new_term(raft);
+        uint64_t raft_term = raft->volatile_term;
+        if (box_raft_wait_term_persisted() != 0)
             return -1;
-        return box_issue_demote(wait_lsn);
+        if (raft->volatile_term != raft_term || txn_limbo.term != limbo_term) {
+            diag_set(ClientError, ER_INTERFERING_ELECTIONS);
+            return -1;
+        }
+        return txn_limbo_promote(&txn_limbo, IPROTO_RAFT_DEMOTE,
+                                 replication_synchro_timeout);
     }
 
 The function bumps the term, making the current node a FOLLOWER, when any kind of
@@ -1919,7 +1174,7 @@ is invoked:
     box_raft_notify_have_quorum(void)
     {
         struct raft *raft = box_raft();
-        bool has_healthy_quorum = replicaset_has_healthy_quorum();
+        bool has_healthy_quorum = box_raft_has_healthy_quorum();
         if (box_raft_election_fencing_paused && has_healthy_quorum)
             box_raft_election_fencing_resume();
 
@@ -1956,7 +1211,8 @@ field ``is_leader_seen``:
 .. code-block:: c
 
     static void
-    box_raft_msg_to_request(const struct raft_msg *msg, struct raft_request *req)
+    box_raft_msg_to_request(const struct raft_msg *msg, struct raft_request *req,
+                            enum group_id group_id)
     {
         *req = (struct raft_request) {
             .term = msg->term,
@@ -1964,8 +1220,12 @@ field ``is_leader_seen``:
             .leader_id = msg->leader_id,
             .is_leader_seen = msg->is_leader_seen,
             .state = msg->state,
-            .vclock = msg->vclock,
+            .group_id = group_id,
         };
+        if (msg->vclock != NULL)
+            vclock_copy(&req->vclock, msg->vclock);
+        else
+            vclock_clear(&req->vclock);
     }
 
 So, when we receive a message, broadcasted from the other node, we process this field:
@@ -1978,29 +1238,49 @@ So, when we receive a message, broadcasted from the other node, we process this 
         ...
         /* Notification from a remote node that it sees the current leader. */
         raft_notify_is_leader_seen(raft, req->is_leader_seen, source);
-            ...
-            if (is_leader_seen)
-                bit_set(&raft->leader_witness_map, source);
-            else if (bit_clear(&raft->leader_witness_map, source))
-                raft_sm_election_update(raft);
         ...
-
-        bool changed = raft_leader_see(raft);
-            uint32_t source = raft->self;
-            bool was_seen = bit_set(&raft->leader_witness_map, source);
-            raft->leader_last_seen = raft_ev_monotonic_now(raft_loop());
-            if (!was_seen) {
-                raft_schedule_broadcast(raft);
-                return true;
-            }
-            return false;
+        raft_leader_see(raft);
         ...
     }
 
-``raft_process_msg`` sets the bit in map, if the corresponding follower stated, that is
-sees the leader. We also set this bit for our node too and broadcast state, if the bit
-was changed, with ``raft_leader_see``. Note, that ``raft_process_heartbeat`` also calls
-``raft_leader_see``. If any of the bits from this map is set we don't start elections.
+The bit in ``leader_witness_map`` is set by ``raft_notify_is_leader_seen``, if the
+corresponding follower stated that it sees the leader:
+
+.. code-block:: c
+
+    void
+    raft_notify_is_leader_seen(struct raft *raft, bool is_leader_seen,
+                               uint32_t source)
+    {
+        /* Leader doesn't care whether someone sees it or not. */
+        if (raft->state == RAFT_STATE_LEADER)
+            return;
+        if (is_leader_seen)
+            bit_set(&raft->leader_witness_map, source);
+        else if (bit_clear(&raft->leader_witness_map, source))
+            raft_sm_election_update(raft);
+    }
+
+We also set this bit for our own node and broadcast the state, if the bit was
+changed, via ``raft_leader_see``:
+
+.. code-block:: c
+
+    static bool
+    raft_leader_see(struct raft *raft)
+    {
+        uint32_t source = raft->self;
+        bool was_seen = bit_set(&raft->leader_witness_map, source);
+        raft->leader_last_seen = raft_ev_monotonic_now(raft_loop());
+        if (!was_seen) {
+            raft_schedule_broadcast(raft);
+            return true;
+        }
+        return false;
+    }
+
+Note, that ``raft_process_heartbeat`` also calls ``raft_leader_see``. If any of
+the bits from this map is set we don't start elections.
 
 Also note, that when timer ends, the bit, which corresponds to the current node, is
 cleared (we didn't receive any heartbeat from the leader during death_timeout, which
@@ -2139,7 +1419,7 @@ executed:
     box_raft_notify_have_quorum(void)
     {
         struct raft *raft = box_raft();
-        bool has_healthy_quorum = replicaset_has_healthy_quorum();
+        bool has_healthy_quorum = box_raft_has_healthy_quorum();
         if (box_raft_election_fencing_paused && has_healthy_quorum)
             box_raft_election_fencing_resume();
 
@@ -2168,7 +1448,8 @@ executed:
         }
     }
 
-If we cannot connect to the quorum, limbo is freezed and we resign from the leader state:
+If we cannot connect to the quorum, we resign from the leader state, which makes
+the limbo leave ``TXN_LIMBO_STATE_LEADER`` and stop writing CONFIRMs:
 
 .. code-block:: c
 
@@ -2176,13 +1457,13 @@ If we cannot connect to the quorum, limbo is freezed and we resign from the lead
     box_raft_fence(void)
     {
         struct raft *raft = box_raft();
-        if (!raft->is_enabled || raft->state != RAFT_STATE_LEADER ||
+        if (raft->state != RAFT_STATE_LEADER ||
             box_election_fencing_mode == ELECTION_FENCING_MODE_OFF ||
             box_raft_election_fencing_paused)
             return;
 
-        txn_limbo_fence(&txn_limbo);
         raft_resign(raft);
+        txn_limbo_update_state(&txn_limbo);
     }
 
 See the details, which explains, why timeout on the leader should be twice as big as on a
@@ -2228,84 +1509,74 @@ All of these checks are done in limbo. Let's see in which parts this happens.
 .. code-block:: c
 
     static int
-    txn_limbo_filter_generic(struct txn_limbo *limbo,
-                 const struct synchro_request *req)
+    txn_limbo_filter_owner_match(struct txn_limbo *limbo,
+                                 const struct synchro_request *req)
     {
-        ...
-        if (req->replica_id != limbo->owner_id) {
+        if (!limbo->do_validate)
+            return 0;
+        if (req->queue_owner_id != limbo->queue.owner_id) {
             say_error("%s. Limbo owner mismatch, owner_id %u",
-                  reject_str(req), limbo->owner_id);
+                  reject_str(req), limbo->queue.owner_id);
             diag_set(ClientError, ER_SPLIT_BRAIN,
                  "got a request from a foreign synchro queue owner");
             return -1;
         }
-
         return 0;
     }
 
-2. Request comes in with an old LSN, which we've already processed or
-   we receive a transaction, when limbo is already cleared (rolled back
-   due to the change of a leader):
+2. A CONFIRM brings an old LSN, which we've already processed, or is
+   otherwise outdated:
 
 .. code-block:: c
 
     static int
-    txn_limbo_filter_queue_boundaries(struct txn_limbo *limbo,
-                      const struct synchro_request *req)
+    txn_limbo_filter_confirm(struct txn_limbo *limbo,
+                             const struct synchro_request *req)
     {
-        int64_t lsn = req->lsn;
-
         ...
+        if (req->confirm.lsn > txn_limbo_replica_confirmed_lsn(
+                limbo, req->queue_owner_id))
+            return txn_limbo_filter_owner_match(limbo, req);
         /*
-         * Explicit split brain situation. Request comes in with an old LSN
-         * which we've already processed.
+         * A CONFIRM with lsn <= known confirm lsn for this replica may be
+         * ignored. The transactions it's going to confirm were already
+         * confirmed by one of the PROMOTE/DEMOTE requests in a new term.
          */
-        if (limbo->confirmed_lsn > lsn) {
-            say_error("%s. confirmed lsn %lld > request lsn %lld",
-                  reject_str(req), (long long)limbo->confirmed_lsn,
-                  (long long)lsn);
-            diag_set(ClientError, ER_SPLIT_BRAIN,
-                 "got a request with lsn from an already "
-                 "processed range");
-            return -1;
-        }
-
-        if (txn_limbo_is_empty(limbo)) {
-            /*
-             * Transactions are rolled back already,
-             * since the limbo is empty.
-             */
-            say_error("%s. confirmed lsn %lld < request lsn %lld "
-                  "and empty limbo", reject_str(req),
-                  (long long)limbo->confirmed_lsn,
-                  (long long)lsn);
-            diag_set(ClientError, ER_SPLIT_BRAIN,
-                 "got a request mentioning future lsn");
-            return -1;
-        }
-
-        ...
         return 0;
     }
 
-3. If the term, promote for which is coming, have already been seen:
+A similar check exists for ROLLBACK (``txn_limbo_filter_rollback``) and for
+zero LSNs (``txn_limbo_filter_non_zero_lsn``).
+
+3. If the term, promote for which is coming, has already been seen:
 
 .. code-block:: c
 
     static int
     txn_limbo_filter_promote_demote(struct txn_limbo *limbo,
-                    const struct synchro_request *req)
+                                    const struct synchro_request *req)
     {
         ...
-        if (limbo->promote_greatest_term >= req->term) {
+        if (limbo->term >= req->promote.term) {
             say_error("%s. Max term seen is %llu", reject_str(req),
-                  (long long)limbo->promote_greatest_term);
+                  (long long)limbo->term);
             diag_set(ClientError, ER_SPLIT_BRAIN,
                  "got a PROMOTE/DEMOTE with an obsolete term");
             return -1;
         }
-
-        return txn_limbo_filter_queue_boundaries(limbo, req);
+        /*
+         * Explicit split brain situation. Request comes in with an old LSN
+         * which we've already processed.
+         */
+        if (limbo->queue.confirmed_lsn > req->promote.lsn) {
+            ...
+            diag_set(ClientError, ER_SPLIT_BRAIN,
+                 "got a request with lsn from an already "
+                 "processed range");
+            return -1;
+        }
+        ...
+        return 0;
     }
 
 Split-Vote detection
