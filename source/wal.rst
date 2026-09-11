@@ -9,17 +9,19 @@ databases which implements atomicity and durability. The base
 idea of logging is to write the data to the storage before make
 this data accessible by others.
 
-We will reference 2.x series of Tarantool source code.
+We will reference 3.x series of Tarantool source code.
 
 Journal subsystem
 -----------------
 
 The journal subsystem provides the following API calls:
 
- - ``journal_create`` to create a new journal;
- - ``journal_set`` to destroy old journal and set a new one;
+ - ``journal_create`` to initialize a journal;
+ - ``journal_set`` to switch the active journal (it just assigns
+   ``current_journal``, it does not destroy the old one);
  - ``journal_entry_new`` to create a new journal entry;
- - ``journal_write`` to write a journal entry.
+ - ``journal_write_submit`` to submit a journal entry;
+ - ``journal_write`` to submit and synchronously wait for an entry.
 
 There might be only one active journal at a time which is
 referred via ``current_journal`` variable (thus we can
@@ -38,7 +40,7 @@ to be precise, only with the members we're interesed in).
 
 .. code-block:: c
 
-    /* box/txn.h */
+    /* src/box/txn.h */
     struct txn {
         /* Transaction cache */
         struct stailq_entry in_txn_cache;
@@ -46,10 +48,11 @@ to be precise, only with the members we're interesed in).
         struct region region;
         /* Transaction ID */
         int64_t id;
-        /* LSN assigned by WAL or -1 on error */
+        /* Journal result: LSN or a TXN_SIGNATURE_* error code */
         int64_t signature;
         /* A fiber initiated the transaction */
         struct fiber *fiber;
+        ...
     };
 
 A transaction is allocated via ``txn_new`` call. The memory allocation
@@ -57,6 +60,11 @@ is a bit tricky here. We request memory region from the main ``cord``
 where we allocate the ``txn`` itself and may increase memory usage if
 ``txn`` need additional data to carry. On ``txn_free`` the additional
 memory get freed and we put ``txn`` to cache for fast reuse.
+
+The structure above is a heavily stripped version. In current sources the
+transaction keeps engines in the ``engines[]`` and ``engines_tx[]`` arrays
+(the old single ``engine``/``engine_tx`` members are gone), along with many
+other members (statement queues, limbo entry, isolation, read views, etc).
 
 TODO: describe ``tx_on_journal_write``
 TODO: mention that the use of journal and transactions are described below
@@ -70,17 +78,21 @@ are implemented in a separate thread.
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     int
     wal_init(enum wal_mode wal_mode, const char *wal_dirname,
-             int64_t wal_max_size, const struct tt_uuid *instance_uuid,
+             int64_t wal_max_size, double wal_retention_period,
+             const struct tt_uuid *instance_uuid,
+             struct vclock *instance_vclock,
+             struct vclock *checkpoint_vclock,
              wal_on_garbage_collection_f on_garbage_collection,
              wal_on_checkpoint_threshold_f on_checkpoint_threshold)
     {
         /* Initialize the state. */
         struct wal_writer *writer = &wal_writer_singleton;
-        wal_writer_create(writer, wal_mode, wal_dirname,
-                          wal_max_size, instance_uuid,
+        wal_writer_create(writer, wal_mode, wal_dirname, wal_max_size,
+                          wal_retention_period, instance_uuid,
+                          instance_vclock, checkpoint_vclock,
                           on_garbage_collection,
                           on_checkpoint_threshold);
     
@@ -101,7 +113,7 @@ runs ``wal_writer_f``:
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     static int
     wal_writer_f(va_list ap)
         struct wal_writer *writer = &wal_writer_singleton;
@@ -129,7 +141,7 @@ thread, are created.
 
 .. code-block:: c
 
-    /* box/box.cc */
+    /* src/box/box.cc */
     box_cfg_xc(void)
         ...
         cbus_endpoint_create(&tx_prio_endpoint, "tx_prio", tx_prio_cb...);
@@ -143,7 +155,7 @@ a communication pipe (cpipe).
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     wal_init
         ...
         /* Create a pipe to WAL thread. */
@@ -170,18 +182,23 @@ which has a complete set of data to be written in a one pass.
 
 .. code-block:: c
 
-    /* box/journal.h */
+    /* src/box/journal.h */
     struct journal_entry {
         // To link entries
         struct stailq_entry         fifo;
         // vclock or error code
         int64_t                     res;
-        // transaction completions
-        journal_write_async_f write_async_cb;
+        // transaction completion
         void *complete_data;
-        bool is_complete;
+        // flags for the last entry row
+        uint8_t                     flags;
+        // write completion callback
+        journal_on_write_f          on_write;
+        bool                        is_complete;
         // real user data to write
         size_t                      approx_len;
+        // fiber which put the request in journal queue
+        struct fiber                *fiber;
         int                         n_rows;
         struct xrow_header          *rows[];
     };
@@ -195,13 +212,13 @@ Once allocated the entry is passed to
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     static int
     wal_write_async(struct journal *journal, struct journal_entry *entry)
     {
         ...
         if (!stailq_empty(&writer->wal_pipe.input) &&
-            (batch = wal_msg(stailq_first_entry(&writer->wal_pipe.input,
+            (batch = wal_msg(stailq_last_entry(&writer->wal_pipe.input,
                             struct cmsg, fifo)))) {
 
             stailq_add_tail_entry(&batch->commit, entry, fifo);
@@ -212,7 +229,7 @@ Once allocated the entry is passed to
             cpipe_push(&writer->wal_pipe, &batch->base);
         }
         ...
-        cpipe_flush_input(&writer->wal_pipe);
+        cpipe_submit_flush(&writer->wal_pipe);
         ...
     }
 
@@ -232,7 +249,7 @@ received it runs a callback which has been initialized earlier in
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     wal_write_async(struct journal *journal, struct journal_entry *entry)
         ...
         wal_msg_create(batch);
@@ -242,10 +259,10 @@ where:
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     static struct cmsg_hop wal_request_route[] = {
         {wal_write_to_disk, &wal_writer_singleton.tx_prio_pipe},
-        {tx_schedule_commit, NULL},
+        {tx_complete_batch, NULL},
     };
     
     static void
@@ -265,35 +282,39 @@ First the ``wal_write_to_disk`` tries to write journal entries
 in a batch to the storage. Actually it does a way more than
 simply write to the disk but we're not going to consider it right now.
 What is important is that each journal entry gets ``vclock`` value
-assigned to the ``journal_entry:res`` member (which is set to
-``-1`` on failure).
+assigned to the ``journal_entry:res`` member. On failure it is set to a
+granular ``JOURNAL_ENTRY_ERR_*`` code (``IO``, ``CASCADE``,
+``CANCELLED``), while ``JOURNAL_ENTRY_ERR_UNKNOWN`` means the write was
+never attempted.
 
 Once everything is written the ``tx_prio_pipe`` is notified
-and then ``tx_schedule_commit`` is running inside main thread.
+and then ``tx_complete_batch`` is running inside main thread.
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     static void
     tx_schedule_queue(struct stailq *queue)
     {
         struct journal_entry *req, *tmp;
         stailq_foreach_entry_safe(req, tmp, queue, fifo)
-            journal_entry_complete(req);
+            journal_async_complete(req);
     }
     
     static void
-    tx_schedule_commit(struct cmsg *msg)
+    tx_complete_batch(struct cmsg *msg)
     {
         struct wal_writer *writer = &wal_writer_singleton;
         struct wal_msg *batch = (struct wal_msg *) msg;
     
         if (!stailq_empty(&batch->rollback)) {
             stailq_concat(&writer->rollback, &batch->rollback);
+            tx_complete_rollback();
         }
     
-        vclock_copy(&replicaset.vclock, &batch->vclock);
+        vclock_copy(writer->instance_vclock, &batch->vclock);
         tx_schedule_queue(&batch->commit);
+        trigger_run(&wal_on_write, NULL);
         mempool_free(&writer->msg_pool, ...);
     }
 
@@ -306,13 +327,17 @@ In summary:
   - we notify the wal thread via ``wal_pipe``;
   - wal thread runs ``wal_write_to_disk`` and
     notifies main thread via ``tx_prio_pipe``;
-  - main thread runs ``tx_schedule_commit``.
+  - main thread runs ``tx_complete_batch``.
 
 Transactions processing
 -----------------------
 
 Transactions processing in 1.x series
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The code snippets below are historical - they describe the 1.x
+implementation and are kept for reference. The current (3.x)
+implementation is described in the next section.
 
 In this series all transactions are processed in synchronous
 way. The journal entry carries no callbacks. We allocate the
@@ -321,7 +346,7 @@ the main cord
 
 .. code-block:: c
 
-    /* box/txn.c */
+    /* src/box/txn.c */
     struct txn *
     txn_begin(bool is_autocommit)
     {
@@ -345,7 +370,7 @@ is set to vclock upon transaction completion by the wal engine.
 
 .. code-block:: c
 
-    /* box/txn.c */
+    /* src/box/txn.c */
     int
     txn_commit(struct txn *txn)
     {
@@ -377,7 +402,7 @@ it to the wal thread.
 
 .. code-block:: c
 
-    /* box/txn.c */
+    /* src/box/txn.c */
     static int64_t
     txn_write_to_wal(struct txn *txn)
     {
@@ -401,11 +426,11 @@ in ``journal_entry`` structure.
 
 .. code-block:: c
 
-    /* box/wal.c */
+    /* src/box/wal.c */
     // main cord thread
     wal_write
         // notify wal thread about queued data
-        cpipe_flush_input(&writer->wal_pipe);
+        cpipe_submit_flush(&writer->wal_pipe);
         ...
         bool cancellable = fiber_set_cancellable(false);
         fiber_yield();
@@ -432,36 +457,45 @@ for write result via ``txn->signature`` and either
 pass the commit to engine or calls ``txn_rollback``
 to rollback the transaction on failure.
 
-Transactions processing in 2.x series
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Transactions processing in 2.x/3.x series
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The transaction processing in 2.x series is almost the same
-as in 1.x with one significant exception - journal writes
+The transaction processing in 2.x and later series is almost the
+same as in 1.x with one significant exception - journal writes
 became asynchronous. We bind callback ``txn_on_journal_write``
 to the journal entry which completes the transaction. This
 has been done in the sake of parallel applier (which is heavily
 used in replication engine).
 
-Thus the ``txn_write`` routine does not wait for transaction
-to complete, still for synchronous transactions we wait explicitly
-until the journal callback finished
+``txn_commit`` is now a thin wrapper over ``txn_commit_impl`` with the
+wait mode ``TXN_COMMIT_WAIT_MODE_COMPLETE``; there are also
+``txn_commit_submit`` and ``txn_commit_nop`` for the asynchronous paths.
+The journal entry is submitted with ``journal_write_submit`` (which does
+not wait), and for synchronous transactions the caller waits explicitly
+until the journal callback finishes.
 
 .. code-block:: c
 
-    /* box/txn.c */
+    /* src/box/txn.c */
     int
-    txn_commit(struct txn *txn)
+    txn_commit_impl(struct txn *txn, enum txn_commit_wait_mode wait_mode)
     {
         struct journal_entry *req;
         ...
         req = txn_journal_entry_new(txn);
             /* txn_journal_entry_new code */
             ...
-            req = journal_entry_new(txn->n_new_rows + txn->n_applier_rows + 1,
+            req = journal_entry_new(txn->n_new_rows + txn->n_applier_rows,
                 txn_region, txn_on_journal_write, txn);
         ...
-        if (journal_write(req) != 0)
+        if (journal_write_submit(req) != 0)
             goto rollback_io;
 
         ...
+    }
+
+    int
+    txn_commit(struct txn *txn)
+    {
+        return txn_commit_impl(txn, TXN_COMMIT_WAIT_MODE_COMPLETE);
     }
