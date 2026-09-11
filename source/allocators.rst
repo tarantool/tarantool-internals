@@ -17,11 +17,11 @@ At the beginning of the main() function memory is allocated with creating
 
 ..  code:: c
 
-    /* main.cc */
+    /* src/main.cc */
     int main(int argc, char **argv)
     {
         ...
-        /* lib/core/memory.c */
+        /* src/lib/core/memory.c */
         memory_init();
             /* memory_init() code */
             static struct quota runtime_quota;
@@ -35,7 +35,7 @@ At the beginning of the main() function memory is allocated with creating
         ...
         tarantool_free();
             /* tarantool_free() code */
-            /* lib/core/memory.c */
+            /* src/lib/core/memory.c */
             memory_free();
                 /* memory_free() code */
                 #if 0
@@ -61,7 +61,7 @@ This is the memory where all spaces are stored.
     void load_cfg(void)
     {
         ...
-        /* box/box.cc */
+        /* src/box/box.cc */
         box_cfg()
             /* box_cfg() code */
             box_storage_init();
@@ -127,7 +127,7 @@ Arena definition
 
 ..  code:: c
 
-    /* lib/small/small/slab_arena.c */
+    /* src/lib/small/small/slab_arena.c */
     /**
      * slab_arena -- a source of large aligned blocks of memory.
      * MT-safe.
@@ -193,7 +193,7 @@ aligned with the integer number of slabs.
 
 ..  code:: c
 
-    /* lib/small/small/slab_arena.c */
+    /* src/lib/small/small/slab_arena.c */
     int slab_arena_create(struct slab_arena *arena, struct quota *quota,
                       size_t prealloc, uint32_t slab_size, int flags)
     {
@@ -236,7 +236,7 @@ aligned with the integer number of slabs.
 
 ..  code:: c
 
-    /* lib/small/include/small/slab_arena.h */
+    /* src/lib/small/include/small/slab_arena.h */
     enum {
         /* mmap() flags */
         SLAB_ARENA_PRIVATE    = SLAB_ARENA_FLAG(1 << 0),
@@ -262,7 +262,7 @@ either take **slab** from the **preallocated** area or allocate it.
 
 ..  code:: c
 
-    /* lib/small/small/slab_arena.c */
+    /* src/lib/small/small/slab_arena.c */
     void *slab_map(struct slab_arena *arena)
     {
         void *ptr;
@@ -306,7 +306,7 @@ mmemory is not deallocated in ``slab_unmap``.
 
 ..  code:: c
 
-    /* lib/small/small/slab_arena.c */
+    /* src/lib/small/small/slab_arena.c */
     void slab_unmap(struct slab_arena *arena, void *ptr)
     {
         if (ptr == NULL)
@@ -398,7 +398,7 @@ Slab & slab cache definition
 
 ..  code:: c
 
-    /* lib/small/include/small/slab_cache.h */
+    /* src/lib/small/include/small/slab_cache.h */
     struct slab {
         /*
         * Next slab in the list of allocated slabs. Unused if
@@ -431,6 +431,7 @@ Slab & slab cache definition
         uint8_t in_use;
     };
 
+    /* src/lib/small/include/small/slab_list.h */
     /**
      * A general purpose list of slabs. Is used
      * to store unused slabs of a certain order in the
@@ -488,7 +489,7 @@ Slab & slab cache definition
         * next_in_list link may be reused for some other purpose.
         */
         struct slab_list orders[ORDER_MAX+1];
-    #ifndef _NDEBUG
+    #ifndef NDEBUG
         pthread_t thread_id;
     #endif
     };
@@ -505,7 +506,7 @@ a chunk of the given size) with *slab_order* function:
 
 ..  code:: c
 
-    /* lib/small/include/small/slab_cache.h */
+    /* src/lib/small/include/small/slab_cache.h */
     static inline uint8_t
     slab_order(struct slab_cache *cache, size_t size)
     {
@@ -531,7 +532,7 @@ splitting the **slab** if the **order** doesn't match exactly.
 
 .. code:: c
 
-   /* lib/small/small/slab_cache.c */
+   /* src/lib/small/small/slab_cache.c */
    struct slab *
    slab_get_with_order(struct slab_cache *cache, uint8_t order)
    {
@@ -588,7 +589,7 @@ There is an option to get a **slab** of the **order** bigger than
 
 ..  code:: c
 
-    /* lib/small/small/slab_cache.c */
+    /* src/lib/small/small/slab_cache.c */
     struct slab *
     slab_get_large(struct slab_cache *cache, size_t size)
     {
@@ -616,7 +617,7 @@ Large **slabs** are being freed when not needed anymore, there is no
 
 ..  code:: c
 
-    /* lib/small/small/slab_cache.c */
+    /* src/lib/small/small/slab_cache.c */
     void
     slab_put_large(struct slab_cache *cache, struct slab *slab)
     {
@@ -651,7 +652,7 @@ to avoid extra moves.
 
 ..  code:: c
 
-    /* lib/small/small/slab_cache.c */
+    /* src/lib/small/small/slab_cache.c */
     /** Return a slab back to the slab cache. */
     void
     slab_put_with_order(struct slab_cache *cache, struct slab *slab)
@@ -725,7 +726,7 @@ MSlab & mempool definitions
 
 ..  code:: c
 
-    /* lib/small/include/small/mempool.h */
+    /* src/lib/small/include/small/mempool.h */
     /** mslab - a standard slab formatted to store objects of equal size. */
     struct mslab {
         struct slab slab;
@@ -812,7 +813,7 @@ though still worth looking at.
 
 ..  code:: c
 
-    /* lib/small/small/mempool.c */
+    /* src/lib/small/include/small/mempool.h */
     /**
      * Initialize a mempool. Tell the pool the size of objects
      * it will contain.
@@ -843,7 +844,7 @@ though still worth looking at.
         return mempool_create_with_order(pool, cache, objsize, order);
     }
 
-    /* lib/small/include/small/mempool.h */
+    /* src/lib/small/small/mempool.c */
     void
     mempool_create_with_order(struct mempool *pool, struct slab_cache *cache,
                               uint32_t objsize, uint8_t order)
@@ -905,7 +906,7 @@ to find a suitable **slab**:
 
 ..  code:: c
 
-    /* lib/small/small/mempool.c */
+    /* src/lib/small/small/mempool.c */
     void *
     mempool_alloc(struct mempool *pool)
     {
@@ -982,7 +983,7 @@ one, or **spare** one, depending on the new free chunks amount.
 
 ..  code:: c
 
-    /* lib/small/small/mempool.c */
+    /* src/lib/small/small/mempool.c */
     void
     mslab_free(struct mempool *pool, struct mslab *slab, void *ptr)
     {
@@ -1059,7 +1060,7 @@ Small allocator definitions
 
 ..  code:: c
 
-    /* lib/small/include/small/small.h */
+    /* src/lib/small/include/small/small.h */
     struct small_mempool {
         /** the pool itself. */
         struct mempool pool;
@@ -1152,70 +1153,60 @@ with the same order.
 
 ..  code:: c
 
-    /* lib/small/small/small.c */
+    /* src/lib/small/small/small.c */
     /** Initialize the small allocator. */
     void
     small_alloc_create(struct small_alloc *alloc, struct slab_cache *cache,
-                       uint32_t objsize_min, float alloc_factor)
+                       uint32_t objsize_min, unsigned granularity,
+                       float alloc_factor, float *actual_alloc_factor)
+    {
+        alloc->cache = cache;
+        /* Align sizes. */
+        objsize_min = small_align(objsize_min, granularity);
+        /* Make sure at least 4 largest objects can fit in a slab. */
+        alloc->objsize_max =
+            mempool_objsize_max(slab_order_size(cache, cache->order_max));
+        alloc->objsize_max = small_align(alloc->objsize_max, granularity);
+        ...
+        alloc->factor = alloc_factor;
+        small_class_create(&alloc->small_class, granularity,
+                           alloc->factor, objsize_min, actual_alloc_factor);
+        small_mempool_create(alloc);
+    }
+
+The mempools themselves are created by ``small_mempool_create``:
+
+..  code:: c
+
+    /* src/lib/small/small/small.c */
+    static inline void
+    small_mempool_create(struct small_alloc *alloc)
+    {
         uint32_t slab_order_cur = 0;
         size_t objsize = 0;
-        struct small_mempool *cur_order_pool = &alloc->small_mempool_cache[0];
-        alloc->small_mempool_groups_size = 0;
-        bool first_iteration = true;
-
+        ...
         for (alloc->small_mempool_cache_size = 0;
              objsize < alloc->objsize_max &&
              alloc->small_mempool_cache_size < SMALL_MEMPOOL_MAX;
              alloc->small_mempool_cache_size++) {
-            size_t prevsize = objsize;
-            uint32_t mempool_cache_size = alloc->small_mempool_cache_size;
-            objsize = small_class_calc_size_by_offset(&alloc->small_class,
-                                  mempool_cache_size);
-            if (objsize > alloc->objsize_max)
-                objsize = alloc->objsize_max;
-            struct small_mempool *pool =
-                &alloc->small_mempool_cache[mempool_cache_size];
+            ...
             mempool_create(&pool->pool, alloc->cache, objsize);
-            pool->pool.small_mempool = pool;
-            pool->objsize_min = prevsize + 1;
-            pool->group = NULL;
-            pool->used_pool = NULL;
-            pool->appropriate_pool_mask = 0;
-            pool->waste = 0;
-
-            if (first_iteration) {
-                slab_order_cur = pool->pool.slab_order;
-                first_iteration = false;
-            }
-            uint32_t slab_order_next = pool->pool.slab_order;
-            /*
-             * In the case when the size of slab changes, create one or
-             * more mempool groups. The count of groups depends on the
-             * mempools count with same slab size. There can be no more
-             * than 32 pools in one group.
-             */
+            ...
             if (slab_order_next != slab_order_cur) {
-                assert(cur_order_pool->pool.slab_ptr_mask ==
-                       (pool - 1)->pool.slab_ptr_mask);
-                slab_order_cur = slab_order_next;
+                ...
                 small_mempool_create_groups(alloc, cur_order_pool,
                                 pool - 1);
                 cur_order_pool = pool;
             }
-            /*
-             * Maximum object size for mempool allocation ==
-             * alloc->objsize_max. If we have reached this size,
-             * there will be no more pools - loop will be broken
-             * at the next iteration. So we need to create the last
-             * group of pools.
-             */
-            if (objsize == alloc->objsize_max) {
-                assert(cur_order_pool->pool.slab_ptr_mask ==
-                       pool->pool.slab_ptr_mask);
-                small_mempool_create_groups(alloc, cur_order_pool,
-                                pool);
-            }
         }
+        /*
+         * The pools are created unconditionally after the loop; the last
+         * group is created for the largest mempool.
+         */
+        int mempool_cache_size = alloc->small_mempool_cache_size;
+        struct small_mempool *last_pool =
+            &alloc->small_mempool_cache[mempool_cache_size - 1];
+        small_mempool_create_groups(alloc, cur_order_pool, last_pool);
         alloc->objsize_max = objsize;
     }
 
@@ -1229,7 +1220,7 @@ with enough memory, we fallback to the allocating of the large block from
 
 ..  code:: c
 
-    /* lib/small/small/small.c */
+    /* src/lib/small/small/small.c */
     void *
     smalloc(struct small_alloc *alloc, size_t size)
     {
@@ -1356,7 +1347,7 @@ Small class definition
 
 .. code-block:: c
 
-    /* lib/small/include/small/small_class.h */
+    /* src/lib/small/include/small/small_class.h */
     struct small_class {
         /** Every class size must be a multiple of this. */
         unsigned granularity;
@@ -1399,7 +1390,7 @@ the algorithm described below, for that:
 
 .. code-block:: c
 
-    /* lib/small/small/small.c */
+    /* src/lib/small/small/small.c */
     static inline struct small_mempool *
     small_mempool_search(struct small_alloc *alloc, size_t size)
     {
@@ -1411,7 +1402,7 @@ the algorithm described below, for that:
         return pool;
     }
 
-    /* lib/small/small/small_class.c */
+    /* src/lib/small/include/small/small_class.h */
     static inline unsigned
     small_class_calc_offset_by_size(struct small_class *sc, unsigned size)
     {
@@ -1474,13 +1465,12 @@ subsystems.
 
 Alongside with many other **allocations**, the most interesting one is
 ``memtx_index_extent_alloc`` function, used as the allocation function for
-**memtx index** needed by **matras**, which works in pair with
-``memtx_index_extent_reserve``. The ``memtx_index_extent_reserve`` is being
-called when we are going to **build** or **rebuild index** to make sure that
-we have enough **reserved extents**. Otherwise, ``memtx_index_extent_reserve``
-tries to allocate **extents** until we get the given number and aborts if it
-can't be done. This allows us to stick to consistency and abort the operation
-before it is too late.
+**memtx index** needed by **matras**. It works in pair with
+``matras_allocator_reserve``: the latter is called when we are going to
+**build** or **rebuild an index** to make sure that we have enough
+**reserved extents**. It tries to allocate **extents** until we get the given
+number and aborts if it can't be done. This allows us to stick to consistency
+and abort the operation before it is too late.
 
 ..  _memtx_index_extent_alloc:
 
@@ -1489,89 +1479,73 @@ before it is too late.
     /**
      * Allocate a block of size MEMTX_EXTENT_SIZE for memtx index
      */
-    void *
-    memtx_index_extent_alloc(void *ctx)
+    static void *
+    memtx_index_extent_alloc(struct matras_allocator *matras_allocator)
     {
-        struct memtx_engine *memtx = (struct memtx_engine *)ctx;
-        if (memtx->reserved_extents) {
-            assert(memtx->num_reserved_extents > 0);
-            memtx->num_reserved_extents--;
-            void *result = memtx->reserved_extents;
-            memtx->reserved_extents = *(void **)memtx->reserved_extents;
-            return result;
-        }
-        ERROR_INJECT(ERRINJ_INDEX_ALLOC, {
-            /* same error as in mempool_alloc */
-            diag_set(OutOfMemory, MEMTX_EXTENT_SIZE,
-                     "mempool", "new slab");
-            return NULL;
-        });
+        struct memtx_engine *memtx = container_of(matras_allocator,
+                                                  struct memtx_engine,
+                                                  index_extent_allocator);
+        ERROR_INJECT(ERRINJ_INDEX_ALLOC, { goto fail; });
         void *ret;
         while ((ret = mempool_alloc(&memtx->index_extent_pool)) == NULL) {
             bool stop;
             memtx_engine_run_gc(memtx, &stop);
             if (stop)
-                    break;
+                break;
         }
         if (ret == NULL)
-            diag_set(OutOfMemory, MEMTX_EXTENT_SIZE,
-                     "mempool", "new slab");
+            goto fail;
         return ret;
+    fail:
+        if (in_txn() != NULL && txn_has_flag(in_txn(), TXN_STMT_ROLLBACK)) {
+            /*
+             * Cannot tolerate allocation failure during rollback, so
+             * allocate outside of the memtx arena quota.
+             */
+            ret = xmalloc(MEMTX_EXTENT_SIZE);
+            mh_ptr_put(memtx->malloc_extents, (const void **)&ret,
+                       NULL, NULL);
+            return ret;
+        }
+        diag_set(OutOfMemory, MEMTX_EXTENT_SIZE, "mempool", "new slab");
+        return NULL;
     }
+
+The counterpart ``memtx_index_extent_free`` releases the extent (either back
+to the mempool or to the malloc-based fallback map).
 
 ..  _memtx_index_extent_reserve:
 
+The reservation is no longer done by memtx itself: the matras allocator
+provides ``matras_allocator_reserve()``, which chains extents into
+``allocator->reserved_extents`` until the requested count is available:
+
 ..  code:: c
 
-    /**
-     * Reserve num extents in pool.
-     * Ensure that next num extent_alloc will succeed w/o an error
-     */
+    /* src/lib/small/small/matras.c */
     int
-    memtx_index_extent_reserve(struct memtx_engine *memtx, int num)
+    matras_allocator_reserve(struct matras_allocator *allocator, int count)
     {
-        ERROR_INJECT(ERRINJ_INDEX_ALLOC, {
-            /* same error as in mempool_alloc */
-            diag_set(OutOfMemory, MEMTX_EXTENT_SIZE,
-                     "mempool", "new slab");
-            return -1;
-        });
-        struct mempool *pool = &memtx->index_extent_pool;
-        while (memtx->num_reserved_extents < num) {
-            void *ext;
-            while ((ext = mempool_alloc(pool)) == NULL) {
-                    bool stop;
-                    memtx_engine_run_gc(memtx, &stop);
-                    if (stop)
-                            break;
-            }
-            if (ext == NULL) {
-                    diag_set(OutOfMemory, MEMTX_EXTENT_SIZE,
-                             "mempool", "new slab");
-                    return -1;
-            }
-            *(void **)ext = memtx->reserved_extents;
-            memtx->reserved_extents = ext;
-            memtx->num_reserved_extents++;
+        while (allocator->num_reserved_extents < count) {
+            void *ext = allocator->alloc_func(allocator);
+            if (ext == NULL)
+                return -1;
+            *(void **)ext = allocator->reserved_extents;
+            allocator->reserved_extents = ext;
+            allocator->num_reserved_extents++;
         }
         return 0;
     }
 
-:ref:`memtx_index_extent_reserve <memtx_index_extent_reserve>` is mostly
-used within ``memtx_space_replace_all_keys``, which basically handles all
-**updates, replaces** and **deletes**, which makes it very frequently
-called function. Here is the interesting fact: in case of **update** or
-**replace** we assume that we need **16 reserved extents** to guarantee
-success, while for **delete** operation we only need **8 reserved
-extents**. The interesting thing here is that we don't want
-:ref:`memtx_index_extent_reserve <memtx_index_extent_reserve>` to fail on
-**delete**. The idea is that even when we don't have 16 reserved
-extents, we will have at least 8 reserved extents and **delete**
-operation won't fail. However, there are situations, when reserved
-extents number might be 0, when user starts to **delete**, for example,
-in case we are **creating index** before deletion and it fails. Though
-deletion fail is still hard to reproduce, although it seems to be
-possible.
+For read views, ``matras_touch_reserve()`` computes how many extents may be
+needed to copy pages on ``matras_touch()`` and reserves that many.
+
+The **16**/**8** extents constants now live in ``memtx_rtree.cc``
+(``RESERVE_EXTENTS_BEFORE_REPLACE = 16``,
+``RESERVE_EXTENTS_BEFORE_DELETE = 8``) and are passed to
+``matras_allocator_reserve()`` by the R-tree replace/delete path
+(``memtx_rtree_index_reserve``). Generic indexes use
+``generic_memtx_index_reserve`` instead.
 
 Matras
 ------
@@ -1621,12 +1595,12 @@ extent size M and sizeof(void \*).
 To sum up, with a given N and M matras instance:
 
     1) can provide not more than
-       pow(M / sizeof(void*), 2)(M / N) blocks
+       pow(M / sizeof(void*), 2) * (M / N) blocks
 
     2) costs 2 random memory accesses to provide a new block
        or restore a block pointer from block id
 
-    3) has an approximate memory overhead of size (LM)
+    3) has an approximate memory overhead of size (L * M)
 
 Of course, the integer type used for block id (matras_id_t,
 usually is a typedef to uint32) also limits the maximum number
@@ -1668,8 +1642,9 @@ Matras uses allocation func determined on creation, which actually is
 
 ..  code:: c
 
+    /* src/lib/small/include/small/matras.h */
     /**
-     * sruct matras_view represents appropriate mapping between
+     * struct matras_view represents appropriate mapping between
      * block ID and it's pointer.
      * matras structure has one main read/write view, and a number
      * of user created read-only views.
@@ -1678,7 +1653,7 @@ Matras uses allocation func determined on creation, which actually is
         /* root extent of the view */
         void *root;
         /* block count in the view */
-        matras_id_t block_count;
+        size_t block_count;
         /* all views are linked into doubly linked list */
         struct matras_view *prev_view, *next_view;
     };
@@ -1694,21 +1669,24 @@ Matras uses allocation func determined on creation, which actually is
         matras_id_t block_size;
         /* Extent size (M) */
         matras_id_t extent_size;
-        /* Numberof allocated extents */
+        /* Number of allocated extents */
         matras_id_t extent_count;
-        /* binary logarithm  of maximum possible created blocks count */
-        matras_id_t log2_capacity;
+        /* Maximum possible number of created blocks */
+        size_t capacity;
         /* See "Shifts and masks explanation" below  */
         matras_id_t shift1, shift2;
         /* See "Shifts and masks explanation" below  */
         matras_id_t mask1, mask2;
-        /* External extent allocator */
-        matras_alloc_func alloc_func;
-        /* External extent deallocator */
-        matras_free_func free_func;
-        /* Argument passed to extent allocator */
-        void *alloc_ctx;
+        /* Matras extent allocator */
+        struct matras_allocator *allocator;
+        /* Matras statistics. Can't be NULL. */
+        struct matras_stats *stats;
     };
+
+The external allocator is now wrapped into ``struct matras_allocator`` (it
+owns ``extent_size``, the alloc/free callbacks and the reserved-extents
+list) and the counters moved into ``struct matras_stats``. The
+``log2_capacity`` field was replaced by the precomputed ``capacity``.
 
 Matras methods
 ~~~~~~~~~~~~~~
@@ -1724,10 +1702,11 @@ determine ids for level 1, 2 & 3 extents in the following way: *N1 = ID
      * block allocator. Does not allocate memory.
      */
     void
-    matras_create(struct matras *m, matras_id_t extent_size, matras_id_t block_size,
-                  matras_alloc_func alloc_func, matras_free_func free_func,
-                  void *alloc_ctx)
+    matras_create(struct matras *m, matras_id_t block_size,
+                  struct matras_allocator *allocator,
+                  struct matras_stats *stats)
     {
+        size_t extent_size = allocator->extent_size;
         /*extent_size must be power of 2 */
         assert((extent_size & (extent_size - 1)) == 0);
         /*block_size must be power of 2 */
@@ -1743,19 +1722,28 @@ determine ids for level 1, 2 & 3 extents in the following way: *N1 = ID
         m->block_size = block_size;
         m->extent_size = extent_size;
         m->extent_count = 0;
-        m->alloc_func = alloc_func;
-        m->free_func = free_func;
-        m->alloc_ctx = alloc_ctx;
+        m->allocator = allocator;
+        m->stats = stats ? stats : &dummy_stats;
 
         matras_id_t log1 = matras_log2(extent_size);
         matras_id_t log2 = matras_log2(block_size);
         matras_id_t log3 = matras_log2(sizeof(void *));
-        m->log2_capacity = log1 * 3 - log2 - log3 * 2;
+        matras_id_t log2_capacity = log1 * 3 - log2 - log3 * 2;
+        /*
+         * Given 32-bit block identifiers, the maximum possible number of
+         * provided blocks is 2^32.
+         */
+        if (log2_capacity > 32)
+            log2_capacity = 32;
+        m->capacity = (size_t)1 << log2_capacity;
         m->shift1 = log1 * 2 - log2 - log3;
         m->shift2 = log1 - log2;
         m->mask1 = (((matras_id_t)1) << m->shift1) - ((matras_id_t)1);
         m->mask2 = (((matras_id_t)1) << m->shift2) - ((matras_id_t)1);
     }
+
+The caller must initialize the allocator first with
+``matras_allocator_create(&allocator, extent_size, alloc_func, free_func)``.
 
 Allocation using matras requires relatively complicated calculations due
 to 3-level extents tree.
@@ -1771,22 +1759,29 @@ to 3-level extents tree.
     void *
     matras_alloc(struct matras *m, matras_id_t *result_id)
     {
-        assert(m->head.block_count == 0 ||
-            matras_log2(m->head.block_count) < m->log2_capacity);
+        assert(m->head.block_count <= m->capacity);
 
-        /* Current block_count is the ID of new block */
+        if (m->head.block_count == m->capacity) {
+            /* Matras is completely full. */
+            return NULL;
+        }
+        void *res = matras_alloc_internal(m);
+        if (res != NULL)
+            *result_id = m->head.block_count++;
+        return res;
+    }
+
+The 3-level extent lookup and allocation were factored out into
+``static void *matras_alloc_internal(struct matras *m)``:
+
+.. code-block:: c
+
+    static void *
+    matras_alloc_internal(struct matras *m)
+    {
         matras_id_t id = m->head.block_count;
 
-        /* See "Shifts and masks explanation" for details */
-        /* Additionally we determine if we must allocate extents.
-        * Basically,
-        * if n1 == 0 && n2 == 0 && n3 == 0, we must allocate root extent,
-        * if n2 == 0 && n3 == 0, we must allocate second level extent,
-        * if n3 == 0, we must allocate third level extent.
-        * Optimization:
-        * (n1 == 0 && n2 == 0 && n3 == 0) is identical to (id == 0)
-        * (n2 == 0 && n3 == 0) is identical to (id & mask1 == 0)
-        */
+        /* Determine whether new extents must be allocated. */
         matras_id_t extent1_available = id;
         matras_id_t n1 = id >> m->shift1;
         id &= m->mask1;
@@ -1795,45 +1790,10 @@ to 3-level extents tree.
         id &= m->mask2;
         matras_id_t extent3_available = id;
         matras_id_t n3 = id;
-
-        void **extent1, **extent2;
-        char *extent3;
-
-        if (extent1_available) {
-            extent1 = (void **)m->head.root;
-        } else {
-            extent1 = (void **)matras_alloc_extent(m);
-            if (!extent1)
-                    return 0;
-            m->head.root = (void *)extent1;
-        }
-
-        if (extent2_available) {
-            extent2 = (void **)extent1[n1];
-        } else {
-            extent2 = (void **)matras_alloc_extent(m);
-            if (!extent2) {
-                    if (!extent1_available) /* was created */
-                            matras_free_extent(m, extent1);
-                    return 0;
-            }
-            extent1[n1] = (void *)extent2;
-        }
-
-        if (extent3_available) {
-            extent3 = (char *)extent2[n2];
-        } else {
-            extent3 = (char *)matras_alloc_extent(m);
-            if (!extent3) {
-                    if (!extent1_available) /* was created */
-                            matras_free_extent(m, extent1);
-                    if (!extent2_available) /* was created */
-                            matras_free_extent(m, extent2);
-                    return 0;
-            }
-            extent2[n2] = (void *)extent3;
-        }
-
-        *result_id = m->head.block_count++;
+        ...
         return (void *)(extent3 + n3 * m->block_size);
     }
+
+The matras API also grew ``matras_dealloc``, ``matras_alloc_range``,
+``matras_dealloc_range``, ``matras_touch_reserve``, ``matras_needs_touch``
+and ``matras_stats``.
