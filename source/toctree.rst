@@ -14,3 +14,4 @@
    allocators
    cbus
    ports
+   memtx_tx
