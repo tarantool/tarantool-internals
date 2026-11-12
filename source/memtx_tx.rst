@@ -578,3 +578,36 @@ alive, but the key must outlive it.
 The cleaner is also built with MVCC off, for a yielding DDL
 (``space->alter_stmts``): an uncommitted DDL entry is hidden entirely, so it
 does not get into the snapshot.
+
+Transaction manager state
+-------------------------
+
+The manager state lives in one global object: ``struct tx_manager``
+in ``memtx_tx.c``, a singleton called ``txm``. It holds:
+
+- ``history``: a hash from a tuple to its story, the way the manager finds a
+  story by a tuple;
+- ``all_stories``: the list of all the stories, which the GC walks with the
+  cursor ``traverse_all_stories``;
+- ``read_view_txs``: the transactions that are in a read view, ordered by
+  ``rv_psn``, so that the head of the list has the oldest one;
+- ``point_holes``: a hash of point lookups that found nothing;
+- ``story_link_storage``: a hash of the multikey and functional links created
+  lazily for dirty tuples; a story alone does not identify such a link, while
+  a regular link is resolved from the story directly;
+- mempools for the stories (one per index count), the links, the point holes
+  and each kind of gap item;
+- statistics and the number of GC steps still to do (``must_do_gc_steps``).
+
+Stories are linked into their space as well, through ``space->memtx_stories``.
+DDL walks this list to abort the readers of the space and then to destroy the
+stories (see :ref:`memtx-tx-ddl`), and the snapshot cleaner walks it to build
+the map of dirty entries (see :ref:`memtx-tx-snapshot-cleaner`).
+
+The manager keeps no list of all transactions. On the hot paths it reaches a
+transaction through the objects that reference it: a reader in a story, a
+gap item, a point hole, or its place in ``read_view_txs``.
+There is, however, a global ``txns`` list (``src/box/txn.h``, owned by
+``txn.c``) that the manager walks for whole-database passes: statistics
+(``memtx_tx_statistics_collect()``), DDL (``memtx_tx_invalidate_space()``)
+and teardown (``memtx_tx_manager_free()``).
