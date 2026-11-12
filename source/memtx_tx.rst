@@ -178,8 +178,7 @@ operations performed on indexes. These can only be found in
 
 The write sets are not stored explicitly, but the concept of stories,
 mentioned above, can be used in order to track modifications performed on a
-tuple in an index. This concept is explained in the "Story chains" section
-below.
+tuple in an index. This concept is explained in :ref:`memtx-tx-story-chains`.
 
 Successors and their use
 ------------------------
@@ -222,6 +221,113 @@ starts before that tuple; the gaps between the returned tuples carry an empty
 key and therefore match any insertion; the tail gap has no successor and lives
 in ``index->read_gaps``. So for TX1 above an insert of ``{4}`` conflicts as
 well. The mechanics are described in :ref:`memtx-tx-gap-items`.
+
+.. _memtx-tx-story-chains:
+
+Story chains
+------------
+
+The write set is not stored anywhere as a list. Instead, every tuple that some
+transaction has changed gets a history: a chain of ``struct memtx_story``
+objects. One story is one change of the tuple (an insertion, a replacement or
+a deletion), and the chain tells in which order these changes happened. A
+tuple that nobody has changed yet may have a chain of a single story, which is
+simply the state that is in the index now.
+
+A chain describes one index entry, not the tuple as a whole. In a multikey or a
+functional index one tuple produces several entries, and each of them is a
+separate thing to conflict on. So a story keeps a set of links for each index:
+``struct memtx_story::link[index_id]`` is a
+``struct memtx_story_index_links``, that is, a list of links plus one inline
+slot for the common case when there is only one. Every link of that list
+belongs to exactly one chain, that is, to one index entry, and remembers which
+entry it is (``key_data``).
+
+The chain is not built in full at once. When a clean tuple is read or replaced,
+the TX manager creates only the link it needs: ``memtx_tx_story_link_get()``
+takes the entry the caller works with and builds the missing link from its key
+data. Operations that walk or rewrite all entries of a story create all the
+links first with ``memtx_tx_story_add_index_links()``: one link per multikey
+key, one per functional key.
+
+An entry can be absent from an index, and then it has no link. This happens
+for two reasons. First, a key part with the ``exclude_null`` option makes the
+index skip tuples with ``NULL`` in that part. Second, a multikey index may
+have no entry for a tuple: its multikey array may be empty, missing or
+``NULL``. A functional index may likewise produce no key, and in either kind
+of index a key may be excluded by ``exclude_null``. ``memtx_tx_story_new()``
+links a regular index only for a non-excluded tuple,
+``memtx_tx_story_add_link()`` assumes the entry is not excluded, and
+``memtx_tx_story_add_index_links()`` skips excluded positions and keys. A
+story can therefore have fewer links than ``index_count``, up to no link at
+all in an index — an "empty story" for that index
+(``story->link[i].first.story == NULL`` and an empty list). Reads and writes
+through that index never see the tuple, so there is nothing to conflict on
+there. The empty link list is a valid state: code that walks every link of a
+story (GC, DDL, the snapshot cleaner) simply does nothing for that index.
+
+Links of one chain point to each other with ``newer_link`` and ``older_link``.
+The newest link describes the current state of the key. If the tuple is still
+in the index, it is this link that has ``in_index`` set to the index; all the
+older links have ``in_index`` equal to ``NULL``. The newest link is also the
+only one that carries up-to-date ``read_gaps``; for the older links this list
+is empty.
+
+The chain is ordered by psn (prepare sequence number, assigned to a transaction
+when it prepares), so it goes from the newest stories to the oldest ones: first
+the stories of in-progress transactions (``add_psn == 0``), then the stories
+of prepared ones (``add_psn != 0``), then the stories of committed ones
+(``add_stmt == NULL``), and the last are the stories created by transactions
+that were rolled back.
+
+A link also tells whether the change is the transaction's own
+(``is_own_change``). This is the case when a transaction rewrote a tuple that
+it had written or removed itself, so nobody else could see the key in between.
+For a functional index the link owns the key it stores, and ``is_func`` says
+so.
+
+GC walks all the stories one at a time: ``memtx_tx_story_gc_step()`` takes the
+next story under the cursor ``txm.traverse_all_stories`` and decides whether it
+can be freed. The reference point is the psn of the oldest read view, that is,
+the ``rv_psn`` of the head of ``read_view_txs`` (or, if there are no read
+views, the psn that the next transaction will get). A story survives the step
+if:
+
+1. some transaction uses it directly: it has an ``add_stmt``, a ``del_stmt`` or
+   at least one reader;
+2. a read view may still need it: ``add_psn`` or ``del_psn`` is not less than
+   the psn of the oldest read view;
+3. some link of it holds gap trackers;
+4. it cannot be unlinked without breaking the chains: the story is the top link
+   of a chain that has an older link (the older one would become the top while
+   not being in the index), or, in a secondary index, the newer story has not
+   committed yet and may roll back, in which case this story becomes the top
+   again.
+
+Only a story that survives none of these checks is unlinked and deleted. So
+being older than every read view makes a story a candidate for collection, not
+garbage yet.
+
+Statements and stories
+----------------------
+
+A statement keeps a pointer to the story it added (``stmt->add_story``) and a
+list of the stories it deleted (``stmt->del_stories``). The stories keep the
+pointers back: ``add_stmt`` and ``del_stmt``.
+
+The deleted side is a list on both ends because a deletion can change hands. A
+story may be deleted by several transactions at once, none of them knowing
+about the others, and when a prepared change becomes visible or is rolled back,
+a pending deletion is moved from the old story to the new one, or back.
+
+The element that links the two sides is ``struct memtx_del_story_link``: one
+object per pair of a statement and a story it deletes. Its ``next`` field
+chains the stories deleted by one statement, ``next_del_stmt`` chains the
+statements that deleted the same story, and the first of them is
+``story->del_stmt``. One object sits on both lists at once, so dropping a
+deletion means unlinking it twice, which is what
+``memtx_tx_story_unlink_deleted_by()`` does; the opposite operation is
+``memtx_tx_story_link_deleted_by()``.
 
 .. _memtx-tx-gap-items:
 
