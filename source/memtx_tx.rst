@@ -523,3 +523,58 @@ DDL are already handled, and their savepoints are cleared.
 The design is deliberately simple: every replace in the space cache aborts
 the concurrent transactions that touched the space and deletes the stories of
 the old schema, so DDL commit itself has nothing left to do.
+
+.. _memtx-tx-snapshot-cleaner:
+
+Snapshot cleaner
+----------------
+
+An index read view can be read in another thread, where there are no tuple
+formats and the history cannot be walked. This is what the snapshot writer
+does, and a user read view uses the same path. For every index read view the
+engine builds a ``struct memtx_tx_snapshot_cleaner``: a hash from a dirty
+index entry to the entry that is visible in that view.
+
+``memtx_tx_snapshot_cleaner_create()`` walks ``space->memtx_stories``,
+materializes the missing links (``memtx_tx_story_add_index_links()``) and
+records every link that is physically in the index (``link->in_index !=
+NULL``). The map is used by ``memtx_tx_snapshot_clarify()``: an entry that is
+not in the map is clean and is returned as is, a mapped entry is replaced by
+its visible version.
+
+The hash key is the tuple, plus the multikey position for a multikey index;
+it is not the key value. In a functional index the key stored in the link and
+the key stored in the index may be different tuples, and equal keys of some
+types are encoded differently, so the key value cannot be used as the hash key.
+
+For a multikey index, the same key may occur at several positions of a tuple.
+The index stores one entry for that key, but the thread that reads the view
+cannot compare keys to know which of those positions the index used. The
+cleaner therefore gets a record for every position with that key; all these
+records refer to the same in-index entry and give the same answer. The record
+for the position used by the transaction history is the original; the others
+are marked ``is_duplicate``. These are alternate lookup keys for the same
+in-index entry, not extra entries: without them, a lookup at another equal
+position would miss the entry.
+
+..  code:: lua
+
+    local tuple = {id = 1, tags = {'a', 'b', 'a'}}
+    -- Multikey index on tags: one in-index entry for 'a'.
+    -- In the array, 'a' is at positions 1 and 3. The history may know the
+    -- entry at position 1; the index may store it at position 3. The cleaner:
+    --   (tuple, 1) -> visible version        -- original
+    --   (tuple, 3) -> same visible version   -- alternate key, is_duplicate
+
+The invisible-count helper behind ``offset`` and ``count``
+(``memtx_tx_snapshot_invisible_count_matching_until()``) skips the
+duplicates, so it counts the logical index entry once, not once per equal-key
+position.
+
+Functional keys are referenced with ``tuple_ref()`` and live until the cleaner
+is destroyed: the story may be collected by GC while the read view is still
+alive, but the key must outlive it.
+
+The cleaner is also built with MVCC off, for a yielding DDL
+(``space->alter_stmts``): an uncommitted DDL entry is hidden entirely, so it
+does not get into the snapshot.
