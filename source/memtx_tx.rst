@@ -180,3 +180,132 @@ The write sets are not stored explicitly, but the concept of stories,
 mentioned above, can be used in order to track modifications performed on a
 tuple in an index. This concept is explained in the "Story chains" section
 below.
+
+Successors and their use
+------------------------
+
+Typically tracking of key access is done using interval trees, this allows
+checking whether operations conflict (for example, an inserted key matches a
+key range read by a concurrent transaction). But this approach performs the
+checks with logarithmic complexity, while the memtx TX manager was created
+with a goal of getting O(1) for all operations, given the amount of concurrent
+transactions is small (in-memory transactions are meant to be fast).
+
+In order to approach the O(1) complexity when checking for key collisions with
+concurrent transactions the successor-based system was introduced. The idea is
+simple:
+
+1. Once an element is inserted into a memtx tree index, its successor in the
+   index can be returned by the insertion method for free.
+2. We can store some information in it, for example, the unsuccessful attempts
+   to read tuples by key prior to that element.
+3. So we can use this information to find conflicts in O(1) complexity.
+
+Consider the following example:
+
+1. TX1 selects tuples matching ``>= 1`` and gets ``{2}`` and ``{3}``, so we
+   leave in the story link of ``{2}`` a ``GAP_NEARBY`` item saying that for TX1
+   there was no element matching ``>= 1`` before ``{2}``.
+2. TX2 concurrently inserts ``{1}``. It sees in its successor (which is
+   ``{2}``) that TX1 requested tuples from the index and hadn't found tuples
+   matching ``>= 1`` prior to ``{2}``. But we have just inserted ``{1}`` and
+   it matches the key, so we have a conflict with TX1 here.
+
+Just like that we have found a conflict of TX2 with TX1 and can handle it. The
+good thing is that whether TX1 also requested data from other places in the
+index does not affect this specific conflict: it's found in-place.
+
+The example tracks only the first gap of a range scan. A range scan (``GE``,
+``GT``, ``LE``, ``LT``) is not one gap but a chain of ``GAP_NEARBY`` items.
+The gap before the first returned tuple carries the read key when the scan
+starts before that tuple; the gaps between the returned tuples carry an empty
+key and therefore match any insertion; the tail gap has no successor and lives
+in ``index->read_gaps``. So for TX1 above an insert of ``{4}`` conflicts as
+well. The mechanics are described in :ref:`memtx-tx-gap-items`.
+
+.. _memtx-tx-gap-items:
+
+Gap items
+---------
+
+The gap items are directly or indirectly created on various operations on the
+index. The directly created ones are: ``GAP_NEARBY``, ``GAP_FULL_SCAN`` and
+``GAP_COUNT``. The ``GAP_INPLACE`` is either created lazily after an index
+calls ``memtx_tx_track_point`` or when an insertion matches a ``GAP_NEARBY``
+item (both cases are described below).
+
+**GAP_INPLACE**
+
+This gap item is an object that informs about the fact that some transaction
+has read by a key matching this story and has found nothing. That means that
+the story author conflicts with it.
+
+This item is created in a number of cases.
+
+1. The first case is an explicit call of the ``memtx_tx_track_point`` function.
+   In this case the TX manager saves the fact that a transaction has found
+   nothing equal to a full key in a structure called "point holes" (see
+   :ref:`memtx-tx-point-holes`). When an insertion matches such a point hole,
+   ``memtx_tx_handle_point_hole_write()`` calls
+   ``memtx_tx_track_story_gap()`` and the ``GAP_INPLACE`` item appears in the
+   read gaps of the new story, just like the nearby-gap path below.
+2. The second case is the insertion of a new element into an index (not only
+   for the current transaction, but a new element for all concurrent
+   transactions). In case we insert an element into the index prior to a
+   successor and it turns out it matches a ``read_gaps`` entry of type
+   ``GAP_NEARBY`` of its successor (or the index, if the inserted element is
+   the last in the index), the ``GAP_INPLACE`` gap item is created in its
+   ``read_gaps``, so now the transaction conflicts with the one that created
+   the ``GAP_NEARBY``.
+
+**GAP_NEARBY**
+
+The gap is created using a dedicated function: ``memtx_tx_track_gap``. This
+gap item represents the fact that a transaction hasn't found a tuple prior to
+a specific successor (or until the end of an index). The item is placed in the
+successor's story, or in ``index->read_gaps`` if there is no successor, and the
+insertion path checks both lists (``memtx_tx_handle_gap_write()``). Once a new
+tuple is inserted into an index prior to that successor (or at the end of the
+index), it's compared with the key specified in the gap item, and if it
+matches, the story of the new tuple is marked with the ``GAP_INPLACE`` item.
+
+A range scan (``GE``, ``GT``, ``LE``, ``LT``) leaves a chain of such items
+rather than one. If the scan starts before the first returned tuple, the first
+step of the iterator (``tree_iterator_start()``) tracks a gap with the read
+key before that tuple; every following step tracks a gap with an empty key
+between the tuple it leaves and the next one, and an empty key matches any
+inserted tuple (``memtx_tx_tuple_matches()``); the exhausted step has no
+successor, so its item goes into ``index->read_gaps`` and catches inserts
+after the last returned tuple.
+
+**GAP_FULL_SCAN**
+
+This gap item is created on an iterator-based lookup in an unordered index
+(hash). This item causes a transaction conflict on any insertion into the
+index after the iterator is created. Such items are only placed in the index
+the lookup is performed in (the one ``memtx_tx_track_full_scan`` is called
+in).
+
+**GAP_COUNT**
+
+The gap item is created in case a transaction performs a count of tuples in an
+index by a key (``memtx_tx_track_count``). Once such an item is created for a
+transaction, any following insertion or deletion of a matching key in the index
+will conflict with it (also it will conflict with all the previously created
+concurrent modifications, not only inserts and deletes, of matching tuples).
+
+A count can also be bounded (``memtx_tx_track_count_until``): when the matching
+tuples are skipped without being read, as in a select with an ``offset``, the
+item remembers the tuple the count stops at (``struct count_gap_item::until``
+with its hint ``until_hint``, which is referenced for a functional key). A
+modification conflicts with such an item only if the changed tuple matches the
+key and the iterator up to that bound (``memtx_tx_tuple_matches_until()``).
+
+.. _memtx-tx-point-holes:
+
+Point holes
+-----------
+
+The point holes storage is used in order to save point hole entries created
+using the ``memtx_tx_track_point`` function. These entries are used and
+removed from the storage once a matching tuple is inserted into the index.
