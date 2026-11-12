@@ -329,6 +329,21 @@ deletion means unlinking it twice, which is what
 ``memtx_tx_story_unlink_deleted_by()`` does; the opposite operation is
 ``memtx_tx_story_link_deleted_by()``.
 
+Read trackers
+-------------
+
+Each read of an index entry is tracked by memtx indexes using the
+``memtx_tx_index_entry_clarify`` function. Here "clarify" means "give me the
+version of the entry that I am allowed to see". The function also saves the
+fact that the entry has been read by a transaction. This is done using linked
+lists of ``struct tx_read_tracker`` objects stored in the tuple stories
+(``struct memtx_story::reader_list``) and in transactions (``struct
+txn::read_set``).
+
+So the tracker has two links: ``in_read_set`` (linking into the corresponding
+transaction list) and ``in_reader_list`` (linking into the reader list of the
+story it is read from).
+
 .. _memtx-tx-gap-items:
 
 Gap items
