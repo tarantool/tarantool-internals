@@ -430,3 +430,45 @@ Point holes
 The point holes storage is used in order to save point hole entries created
 using the ``memtx_tx_track_point`` function. These entries are used and
 removed from the storage once a matching tuple is inserted into the index.
+
+Rollback
+--------
+
+A rolled-back statement produced no change, so the story it added must stop
+being visible. It cannot be deleted right away, though: it may still be
+referenced by read trackers and by its neighbours in the history chains, and
+those references must stay valid until the GC removes it.
+
+``memtx_tx_history_rollback_added_story()`` first sinks the story to the end of
+every chain it belongs to, in every index (``memtx_tx_story_link_reorder()``),
+so that the versions above it become the ones visible to the readers. The
+story itself is not deleted yet: it stays at the end of the chains and is
+removed later by the GC.
+
+If the statement belonged to a prepared transaction, there is more to undo,
+because prepare has already made the change visible to the others. In that
+case the function also:
+
+- relinks the in-progress transactions that were deleting the new version
+  back to the old one, or to nothing if there was no old version. Prepare had
+  moved them, so rollback moves them the other way
+  (``memtx_tx_story_unlink_deleted_by()``, then
+  ``memtx_tx_story_link_deleted_by()``);
+- resets ``add_psn`` to 0 and, if there was an old version, ``del_psn`` of the
+  old version to 0, because nothing is prepared anymore;
+- aborts with a conflict every transaction that read the story
+  (``memtx_tx_abort_story_readers()``): they have seen a version that never
+  existed, and no read view can make that state consistent;
+- if there was an old version, rechecks what the rollback changes in the
+  indexes (``memtx_tx_handle_dups_and_gaps_on_rollback()``): a newer
+  in-progress transaction may now duplicate the old version in a secondary
+  index, and a transaction that found nothing where the new version had
+  appeared is aborted. Both kinds of conflict are found by walking the chain
+  up from the old version.
+
+Finally the statement is unlinked from the story it added
+(``memtx_tx_story_unlink_added_by()``) and from the story it deleted
+(``memtx_tx_story_unlink_deleted_by()``), and the story is marked as deleted
+long ago: its ``del_psn`` becomes ``MEMTX_TX_ROLLBACKED_PSN``, which is 1, a
+value below ``TXN_MIN_PSN`` and thus below any real psn. No reader can see the
+story anymore.
