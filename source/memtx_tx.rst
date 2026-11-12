@@ -127,6 +127,10 @@ A few more rules:
        tx2.index:replace({2}) -- might not conflict, the count is still 3
                               -- for tx1.
 
+Schema changes are the exception to the read-view rule. DDL cannot wait for a
+read view: the history the reader would need is about to be deleted, so DDL
+aborts its readers instead (see :ref:`memtx-tx-ddl`).
+
 General overview
 ----------------
 
@@ -472,3 +476,50 @@ Finally the statement is unlinked from the story it added
 long ago: its ``del_psn`` becomes ``MEMTX_TX_ROLLBACKED_PSN``, which is 1, a
 value below ``TXN_MIN_PSN`` and thus below any real psn. No reader can see the
 story anymore.
+
+.. _memtx-tx-ddl:
+
+DDL
+---
+
+DDL changes the schema of a space and with it the meaning of every MVCC object
+bound to that schema: stories, links, read trackers, gap items and point
+holes. The manager does not migrate them. Instead, it aborts every concurrent
+transaction that may still depend on the old schema and destroys the old
+history.
+
+The on-replace trigger for system-space rows
+(``on_replace_dd_system_space()`` in ``schema.cc``) calls
+``memtx_tx_acquire_ddl()`` before the row is replaced. The function marks the
+transaction (``txn::is_schema_changed``) and forbids it to yield once the
+schema has changed. When the space cache is replaced,
+``space_cache_replace()`` installs the new space and then invalidates the old
+one; for memtx this reaches ``memtx_tx_invalidate_space(old_space,
+ddl_owner)``, which rebuilds the MVCC state before the old space is freed:
+
+1. ``memtx_tx_abort_space_schema_readers()`` aborts the readers of the space's
+   stories (``memtx_story::reader_list``), the gap readers on the top links of
+   the chains and in ``index->read_gaps``, every writer with a statement over
+   the space (walking the global ``txns`` list), and every point-hole holder
+   for its indexes.
+2. The indexes are refilled with the tuples visible to ``ddl_owner``
+   (``memtx_tx_story_link_find_visible_entry()`` with ``is_prepared_ok =
+   true``, then ``memtx_index_replace_entry()``). For the primary index, the
+   tuple's primary-index ownership moves to the story of the visible tuple
+   (``memtx_tx_ref_to_primary()``, ``memtx_tx_unref_from_primary()``).
+3. All stories of the space are deleted
+   (``memtx_tx_story_full_unlink_on_space_delete()``, then
+   ``memtx_tx_story_delete()``).
+4. The savepoints of the aborted statements over the space are cleared, so
+   their rollback does not touch the old space, and ``index->read_gaps`` is
+   emptied.
+
+Rollback of a statement whose stories were removed by DDL must not look for
+them. The DDL transaction itself and transactions prepared before the DDL are
+rolled back physically from ``stmt->engine_savepoint`` by
+``memtx_tx_history_rollback_empty_stmt()``; the transactions aborted by the
+DDL are already handled, and their savepoints are cleared.
+
+The design is deliberately simple: every replace in the space cache aborts
+the concurrent transactions that touched the space and deletes the stories of
+the old schema, so DDL commit itself has nothing left to do.
